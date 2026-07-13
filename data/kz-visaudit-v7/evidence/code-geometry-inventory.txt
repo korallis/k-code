@@ -1,0 +1,144 @@
+# Procedural / primitive geometry inventory
+## craftMeshes LOD
+2:import { Detailed, useGLTF } from "@react-three/drei";
+25:  farOnly?: boolean;
+33:        <boxGeometry args={[0.9, 0.28, 2.8]} />
+36:        <boxGeometry args={[0.55, 0.18, 1.1]} />
+40:        <coneGeometry args={[0.35, 0.9, 4]} />
+44:        <boxGeometry args={[0.9, 0.06, 1.4]} />
+47:        <boxGeometry args={[0.9, 0.06, 1.4]} />
+51:        <cylinderGeometry args={[0.12, 0.16, 0.9, 8]} />
+54:        <cylinderGeometry args={[0.12, 0.16, 0.9, 8]} />
+57:        <circleGeometry args={[0.11, 10]} />
+60:        <circleGeometry args={[0.11, 10]} />
+64:        <boxGeometry args={[0.04, 0.04, 2.2]} />
+67:        <boxGeometry args={[0.04, 0.04, 2.2]} />
+71:        <sphereGeometry args={[0.28, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+74:        <torusGeometry args={[0.26, 0.025, 6, 16]} />
+85:        <boxGeometry args={[1.35, 0.35, 2.6]} />
+88:        <boxGeometry args={[1.0, 0.22, 1.4]} />
+92:        <boxGeometry args={[0.35, 0.28, 0.9]} />
+95:        <boxGeometry args={[0.35, 0.28, 0.9]} />
+99:        <boxGeometry args={[0.7, 0.08, 1.5]} />
+102:        <boxGeometry args={[0.7, 0.08, 1.5]} />
+106:        <cylinderGeometry args={[0.18, 0.22, 0.7, 10]} />
+109:        <cylinderGeometry args={[0.18, 0.22, 0.7, 10]} />
+112:        <circleGeometry args={[0.16, 12]} />
+115:        <circleGeometry args={[0.16, 12]} />
+119:        <boxGeometry args={[1.3, 0.03, 0.04]} />
+122:        <boxGeometry args={[0.04, 0.04, 2.0]} />
+125:        <boxGeometry args={[0.04, 0.04, 2.0]} />
+129:        <boxGeometry args={[0.2, 0.04, 0.5]} />
+132:        <boxGeometry args={[0.2, 0.04, 0.5]} />
+136:        <sphereGeometry args={[0.36, 14, 12, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+139:        <torusGeometry args={[0.34, 0.03, 6, 18]} />
+150:        <boxGeometry args={[1.85, 0.45, 2.5]} />
+153:        <boxGeometry args={[1.4, 0.28, 1.6]} />
+157:        <boxGeometry args={[0.55, 0.5, 0.25]} />
+160:        <boxGeometry args={[0.55, 0.5, 0.25]} />
+164:        <boxGeometry args={[0.85, 0.18, 1.8]} />
+167:        <boxGeometry args={[0.85, 0.18, 1.8]} />
+171:        <cylinderGeometry args={[0.28, 0.32, 0.85, 12]} />
+174:        <cylinderGeometry args={[0.28, 0.32, 0.85, 12]} />
+177:        <circleGeometry args={[0.25, 14]} />
+180:        <circleGeometry args={[0.25, 14]} />
+184:        <boxGeometry args={[0.35, 0.05, 0.08]} />
+187:        <boxGeometry args={[0.35, 0.05, 0.08]} />
+191:        <boxGeometry args={[0.05, 0.05, 2.2]} />
+194:        <boxGeometry args={[0.05, 0.05, 2.2]} />
+198:        <boxGeometry args={[0.7, 0.22, 0.9]} />
+201:        <boxGeometry args={[0.75, 0.04, 0.95]} />
+208:function CraftSilhouette({
+225:        <boxGeometry args={[...dims]} />
+228:        <circleGeometry args={[0.12, 8]} />
+231:        <circleGeometry args={[0.12, 8]} />
+237:function FamilyMesh({
+254:function GlbHeroLod({ family }: { family: CraftFamily }) {
+289:  farOnly = false,
+295:      {farOnly ? (
+296:        <CraftSilhouette family={family} mats={mats} />
+298:        <Detailed distances={[0, 32, 75]}>
+300:            <GlbHeroLod family={family} />
+302:            <FamilyMesh family={family} mats={mats} />
+305:            <GlbHeroLod family={family} />
+307:            <FamilyMesh family={family} mats={mats} />
+309:          <CraftSilhouette family={family} mats={mats} />
+310:        </Detailed>
+332:      <FamilyMesh family={family} mats={mats} />
+## AiCraft
+106:import { CraftVisualMesh } from "./craftMeshes";
+227:      <CraftVisualMesh family={family} useGlbLod={!ghosted} />
+1257:        <CraftVisualMesh family={family} useGlbLod={false} farOnly />
+## PickupPadMesh
+113:        <cylinderGeometry args={[0.18, 0.32, height, 8]} />
+116:        <cylinderGeometry args={[0.2, 0.34, height * 0.95, 8]} />
+187:        <cylinderGeometry args={[0.15, 0.2, 2.4, 6]} />
+444:export function PickupPadMesh({
+471:        <cylinderGeometry args={[1.15, 1.3, 0.14, 16]} />
+480:        <torusGeometry args={[0.9, 0.09, 8, 24]} />
+493:          <octahedronGeometry args={[0.38, 0]} />
+524:      <cylinderGeometry args={[0.22, 0.36, 5, 8]} />
+## trackSurfaceLife
+68:      <boxGeometry args={[chevronW * 0.55, 0.05, arm]} />
+89:export function BoostPadSurfaces({ pads }: { pads: GateT[] }) {
+104:            <boxGeometry args={[p.half[0] * 2 + 0.45, 0.04, p.half[2] * 2 + 0.45]} />
+118:            <boxGeometry args={[p.half[0] * 2, 0.08, p.half[2] * 2]} />
+150:export function RechargeStripSurfaces({ strips }: { strips: GateT[] }) {
+164:            <boxGeometry args={[p.half[0] * 2, 0.07, p.half[2] * 2]} />
+180:            <boxGeometry args={[0.12, 0.04, p.half[2] * 2]} />
+191:            <boxGeometry args={[0.12, 0.04, p.half[2] * 2]} />
+219:export function RibbonMarkings({
+401:export function FinishLineSurface({ gate }: { gate: GateT }) {
+442:        <boxGeometry args={[halfW * 2 + 0.2, 0.04, depth + 0.15]} />
+450:        <boxGeometry args={[cellW * 0.94, 0.03, cellD * 0.9]} />
+457:        <boxGeometry args={[cellW * 0.94, 0.03, cellD * 0.9]} />
+470:        <boxGeometry args={[halfW * 2, 0.035, 0.28]} />
+487:export function PickupPadFloorGlow({
+## Scenery
+81:function NearPylons({
+117:        <cylinderGeometry args={[0.22, 0.36, 5, 8]} />
+130:        <cylinderGeometry args={[0.22, 0.36, 5, 8]} />
+166:      <boxGeometry args={[0.35, 0.22, 0.5]} />
+182:function MidBuildings({
+217:        <boxGeometry args={[1, 1, 1]} />
+235:        <boxGeometry args={[0.92, 0.07, 0.06]} />
+261:        <boxGeometry args={[0.55, 0.14, 0.08]} />
+365:function NearGantries({
+418:        <boxGeometry args={[0.15, 9, 0.15]} />
+429:        <boxGeometry args={[0.15, 9, 0.15]} />
+440:        <boxGeometry args={[6.3, 0.12, 0.12]} />
+482:        <cylinderGeometry args={[700, 700, 220, 48, 1, true]} />
+572:        <boxGeometry args={[0.6, 3, 0.6]} />
+589:            <boxGeometry
+## WeaponVfx
+626:        <sphereGeometry args={[0.32, 8, 8]} />
+643:        <cylinderGeometry args={[1, 0.15, 1, 6]} />
+660:        <coneGeometry args={[0.26, 1.2, 6]} />
+677:        <coneGeometry args={[0.7, 1.4, 3]} />
+694:        <cylinderGeometry args={[0.1, 0.1, 1, 6]} />
+714:          <sphereGeometry args={[1, 16, 12]} />
+736:          <boxGeometry args={[1.2, 0.6, 2.4]} />
+757:          <sphereGeometry args={[0.55, 8, 8]} />
+778:          <sphereGeometry args={[0.5, 10, 8]} />
+799:          <octahedronGeometry args={[0.45, 0]} />
+817:        <ringGeometry args={[5.5, 7, 40]} />
+830:        <coneGeometry args={[1, 1, 12, 1, true]} />
+## Scene renderer
+3:import { Environment, Stars } from "@react-three/drei";
+4:import { EffectComposer, Bloom } from "@react-three/postprocessing";
+56:      <ambientLight intensity={0.5} />
+57:      <directionalLight
+60:        castShadow
+76:          <Environment
+93:function CircuitEnvironment({ theme }: { theme: SceneryTheme }) {
+95:    <Environment
+207:      <ambientLight intensity={theme.ambient} />
+210:      <directionalLight
+215:      <directionalLight
+221:        <directionalLight
+229:        <CircuitEnvironment theme={theme} />
+253:      <EffectComposer>
+254:        <Bloom
+260:      </EffectComposer>
+284:        gl={{ antialias: true }}
+285:        dpr={[1, 1.75]}

@@ -1,0 +1,94 @@
+  return (
+    <>
+      <color attach="background" args={[theme.background]} />
+      {/* Fog starts after the readability corridor so pads/landmarks stay legible. */}
+      <fog attach="fog" args={theme.fog} />
+      <ambientLight intensity={theme.ambient} />
+      <hemisphereLight args={[theme.hemiSky, theme.hemiGround, 0.5]} />
+      {/* Shadow maps double draw-call counts; Tier A uses unshadowed key + rim. */}
+      <directionalLight
+        position={[8, 12, 6]}
+        intensity={2.35}
+        color={theme.keyLight}
+      />
+      <directionalLight
+        position={[-6, 8, -4]}
+        intensity={0.6}
+        color={theme.fillLight}
+      />
+      {theme.rimLight && (
+        <directionalLight
+          position={[0, 4, -10]}
+          intensity={0.35}
+          color={theme.rimLight}
+        />
+      )}
+      <Stars radius={400} depth={80} count={1400} factor={5} saturation={0} fade speed={0.4} />
+      <Suspense fallback={null}>
+        <CircuitEnvironment theme={theme} />
+      </Suspense>
+      {theme.rainDensity != null && theme.rainDensity > 0 && (
+        <RainAtmosphere density={theme.rainDensity} color={theme.accents.primary} />
+      )}
+
+      <Physics timeStep={1 / 60} interpolate paused>
+        <FixedStepDriver />
+        {useLegacy ? (
+          <Track legacyDef={entry.definition} ribbonTint={theme.ribbonTint} />
+        ) : (
+          <Track track={rt} ribbonTint={theme.ribbonTint} />
+        )}
+        <Scenery built={sceneryTrack} theme={theme} />
+        <PlayerCraft family={craftFamily} spawn={spawn} />
+        {raceVsAi && trackKey === "neonOrbital" && (
+          <AiField key={raceRound} track={rt} />
+        )}
+        <GhostCrafts />
+        <WeaponVfx />
+      </Physics>
+      <RaceController />
+      <SpeedLines />
+      <RenderBudgetOverlay enabled />
+      <EffectComposer>
+        <Bloom
+          mipmapBlur
+          intensity={0.82}
+          luminanceThreshold={0.82}
+          luminanceSmoothing={0.22}
+        />
+      </EffectComposer>
+    </>
+  );
+}
+
+export function Scene({
+  craftFamily = DEFAULT_CRAFT_FAMILY,
+  showPosition = false,
+  raceVsAi = false,
+  raceRound = 0,
+  onRestart,
+  trackKey = DEFAULT_TRACK_KEY,
+}: SceneProps = {}) {
+  const sceneParam =
+    typeof location !== "undefined"
+      ? new URLSearchParams(location.search).get("scene")
+      : null;
+  const isArena = sceneParam === "arena";
+
+  return (
+    <>
+      <Canvas
+        className="h-full w-full"
+        camera={{ position: [4, 3, 6], fov: CAM_BASE_FOV, near: 0.1, far: 1100 }}
+        gl={{ antialias: true }}
+        dpr={[1, 1.75]}
+      >
+        {isArena ? (
+          <ArenaScene craftFamily={craftFamily} />
+        ) : (
+          <CircuitScene
+            craftFamily={craftFamily}
+            trackKey={trackKey}
+            raceVsAi={raceVsAi}
+            raceRound={raceRound}
+          />

@@ -1,0 +1,14 @@
+state/
+.no-mistakes/
+.lavish/
+.fm-secondmate-home
+.fm-grok-turnend
+.env
+*.key
+*credential*
+config/x-mode.env
+config/cmux-socket-password
+.DS_Store
+__pycache__/
+*.pyc
+*.log

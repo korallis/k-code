@@ -1,0 +1,21 @@
+label,path,bytes,triangles,vertices,attrs,tex,exts,generator
+RAW_razor,public/assets/raw/tripo/ships/razor/56da91f8-8894-4147-8082-aff729082f21-pbr_model.glb,2476476,17430,11586,"NORMAL:f32, POSITION:f32, TEXCOORD_0:f32",4096x4096,none,https://tripo3d.ai
+OPT_razor,public/assets/ships/ship-razor.glb,432196,15764,10743,"NORMAL:i8_norm, POSITION:i16_norm, TEXCOORD_0:u16_norm",1024x1024,meshopt+quantize,glTF-Transform v4.4.1
+RAW_viper,public/assets/raw/tripo/ships/viper/a413b7f9-135c-4d36-9850-6d9e890c86f5-pbr_model.glb,2695756,16605,11311,"NORMAL:f32, POSITION:f32, TEXCOORD_0:f32",4096x4096,none,https://tripo3d.ai
+OPT_viper,public/assets/ships/ship-viper.glb,492292,16001,11002,"NORMAL:i8_norm, POSITION:i16_norm, TEXCOORD_0:u16_norm",1024x1024,meshopt+quantize,glTF-Transform v4.4.1
+RAW_pulse,public/assets/raw/tripo/ships/pulse/709a882f-d1b1-49cf-9bf5-c0c0ad429fb5-pbr_model.glb,3054016,16283,12855,"NORMAL:f32, POSITION:f32, TEXCOORD_0:f32",4096x4096,none,https://tripo3d.ai
+OPT_pulse,public/assets/ships/ship-pulse.glb,597456,16095,12758,"NORMAL:i8_norm, POSITION:i16_norm, TEXCOORD_0:u16_norm",1024x1024,meshopt+quantize,glTF-Transform v4.4.1
+RAW_nova,public/assets/raw/tripo/ships/nova/194ce04b-0260-4192-9265-301de34e62e4-pbr_model.glb,3074404,15811,11834,"NORMAL:f32, POSITION:f32, TEXCOORD_0:f32",4096x4096,none,https://tripo3d.ai
+OPT_nova,public/assets/ships/ship-nova.glb,601060,15015,11423,"NORMAL:i8_norm, POSITION:i16_norm, TEXCOORD_0:u16_norm",1024x1024,meshopt+quantize,glTF-Transform v4.4.1
+RAW_bulwark,public/assets/raw/tripo/ships/bulwark/60433bf7-730a-4ced-8bb5-5df9dd4141b3-pbr_model.glb,3810416,16525,12244,"NORMAL:f32, POSITION:f32, TEXCOORD_0:f32",4096x4096,none,https://tripo3d.ai
+OPT_bulwark,public/assets/ships/ship-bulwark.glb,707008,16347,12151,"NORMAL:i8_norm, POSITION:i16_norm, TEXCOORD_0:u16_norm",1024x1024,meshopt+quantize,glTF-Transform v4.4.1
+OPT_agile,public/assets/ships/ship-agile.glb,549944,15297,10456,"NORMAL:i8_norm, POSITION:i16_norm, TEXCOORD_0:u16_norm",1024x1024,meshopt+quantize,glTF-Transform v4.4.1
+OPT_balanced,public/assets/ships/ship-balanced.glb,595252,15572,12434,"NORMAL:i8_norm, POSITION:i16_norm, TEXCOORD_0:u16_norm",1024x1024,meshopt+quantize,glTF-Transform v4.4.1
+OPT_heavy,public/assets/ships/ship-heavy.glb,606060,16062,11949,"NORMAL:i8_norm, POSITION:i16_norm, TEXCOORD_0:u16_norm",1024x1024,meshopt+quantize,glTF-Transform v4.4.1
+PROP_gate,public/assets/opt/tripo/props/finish-gate.glb,439956,8090,7127,"NORMAL:i8_norm, POSITION:i16_norm, TEXCOORD_0:u16_norm",1024x1024,meshopt+quantize,glTF-Transform v4.4.1
+PROP_tower,public/assets/opt/tripo/props/landmark-tower.glb,479080,7291,5916,"NORMAL:i8_norm, POSITION:i16_norm, TEXCOORD_0:u16_norm",1024x1024,meshopt+quantize,glTF-Transform v4.4.1
+PROP_stack,public/assets/opt/tripo/props/foundry-cooling-stack.glb,637836,7465,9700,"NORMAL:i8_norm, POSITION:i16_norm, TEXCOORD_0:u16_norm",2048x2048,meshopt+quantize,glTF-Transform v4.4.1
+PROP_crane,public/assets/opt/tripo/props/foundry-dock-crane.glb,593260,7206,8879,"NORMAL:i8_norm, POSITION:i16_norm, TEXCOORD_0:u16_norm",1024x1024,meshopt+quantize,glTF-Transform v4.4.1
+PROP_chimney,public/assets/opt/tripo/props/foundry-furnace-chimney.glb,549776,7403,5463,"NORMAL:i8_norm, POSITION:i16_norm, TEXCOORD_0:u16_norm",1024x1024,meshopt+quantize,glTF-Transform v4.4.1
+PROP_pit,public/assets/opt/tripo/props/neon-pit-garage.glb,461904,8368,7293,"NORMAL:i8_norm, POSITION:i16_norm, TEXCOORD_0:u16_norm",1024x1024,meshopt+quantize,glTF-Transform v4.4.1
+PROP_stand,public/assets/opt/tripo/props/spectator-grandstand.glb,476820,8851,9661,"NORMAL:i8_norm, POSITION:i16_norm, TEXCOORD_0:u16_norm",1024x1024,meshopt+quantize,glTF-Transform v4.4.1

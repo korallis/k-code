@@ -1,0 +1,36 @@
+    const npmCache = join(ROOT, ".npm-cache");
+    ensureDir(npmCache);
+    await execFileAsync(
+      "npx",
+      ["-y", "@gltf-transform/cli", "optimize", src, dest, "--compress", "meshopt"],
+      {
+        cwd: ROOT,
+        env: { ...process.env, npm_config_cache: npmCache },
+        maxBuffer: 32 * 1024 * 1024,
+      },
+    );
+    if (!existsSync(dest)) {
+      throw new Error("optimize produced no output file");
+    }
+    const after = statSync(dest).size;
+    results.afterBytes += after;
+    results.optimized += 1;
+    console.log(
+      `  ok  ${relative(ROOT, src)}  ${formatBytes(before)} -> ${formatBytes(after)}`,
+    );
+    return true;
+  } catch (err) {
+    const msg = err.stderr?.toString?.() || err.message || String(err);
+    console.error(`  FAIL optimize: ${relative(ROOT, src)}: ${msg}`);
+    results.failed.push(relative(ROOT, src));
+    try {
+      copyFileSync(src, dest);
+      const after = statSync(dest).size;
+      results.afterBytes += after;
+      results.copied += 1;
+      console.log(
+        `  copy-through (unoptimized): ${relative(ROOT, dest)} (${formatBytes(after)})`,
+      );
+    } catch (copyErr) {
+      console.error(`  FAIL copy-through: ${copyErr.message}`);
+    }

@@ -1,0 +1,30 @@
+export function CraftVisualMesh({
+  family = DEFAULT_CRAFT_FAMILY,
+  useGlbLod = true,
+  farOnly = false,
+}: CraftMeshProps) {
+  const mats = useMemo(() => getMaterialKit(), []);
+
+  return (
+    <group position={[0, 0.05, 0]}>
+      {farOnly ? (
+        <CraftSilhouette family={family} mats={mats} />
+      ) : (
+        <Detailed distances={[0, 32, 75]}>
+          {useGlbLod ? (
+            <GlbHeroLod family={family} />
+          ) : (
+            <FamilyMesh family={family} mats={mats} />
+          )}
+          {useGlbLod ? (
+            <GlbHeroLod family={family} />
+          ) : (
+            <FamilyMesh family={family} mats={mats} />
+          )}
+          <CraftSilhouette family={family} mats={mats} />
+        </Detailed>
+      )}
+    </group>
+  );
+}
+

@@ -1,0 +1,66 @@
+{
+  "rules": [
+    {
+      "when": "The task is research OR planning: a deep-research investigation, or drafting a plan/design/approach for a feature before implementation.",
+      "use": [
+        {
+          "harness": "pi",
+          "model": "xai-auth/grok-4.5",
+          "effort": "high"
+        },
+        {
+          "harness": "pi",
+          "model": "openai-codex/gpt-5.6-sol",
+          "effort": "high"
+        },
+        {
+          "harness": "claude",
+          "model": "claude-opus-4-8",
+          "effort": "max"
+        }
+      ],
+      "why": "TRIAD CONVERGE, not either/or: the captain wants ALL THREE profiles spawned as coordinating co-draft scouts for every research or planning task - Grok 4.5 through Pi (high), GPT-5.6 Sol through Pi (high), and Opus 4.8 (max) each draft, cross-review the others' drafts, and firstmate converges them into one final synthesis. THIRD-VOICE QUOTA SWAP: use claude-fable-5 (effort max) in place of claude-opus-4-8 whenever Fable 5 is within plan limits - check quota-axi's claude `model:fable` window; if percentRemaining > 0 use Fable 5, else fall back to Opus 4.8. MANDATORY TOOLS: every research and planning scout MUST use the exa and ref MCP servers for sources. Pi's explicit xai-auth/grok-4.5 model route is smoke-tested and avoids the standalone Grok harness."
+    },
+    {
+      "when": "The task is UI implementation or UI polish: creating or changing user-facing screens, components, interaction design, responsive layout, accessibility presentation, visual design, HUD, or animation. Research and planning still use the triad rule instead.",
+      "use": {
+        "harness": "pi",
+        "model": "openai-codex/gpt-5.6-sol",
+        "effort": "max"
+      },
+      "why": "Captain wants all UI implementation and polish on GPT-5.6 Sol through Pi at Max reasoning. Pi 0.80.6 accepts --thinking max and the exact route was smoke-tested."
+    },
+    {
+      "when": "The task is complex: a big or ambiguous multi-file feature, a risky or architectural refactor, deep design work, tricky debugging, or anything that requires holding many moving parts in mind.",
+      "use": {
+        "harness": "pi",
+        "model": "openai-codex/gpt-5.6-sol",
+        "effort": "xhigh"
+      },
+      "why": "Captain wants non-UI complex work on GPT-5.6 Sol through Pi at Extra High reasoning; UI implementation uses the dedicated Max rule."
+    },
+    {
+      "when": "The task is normal/main implementation work: a well-scoped feature, fix, test addition, or ordinary scout investigation that does not qualify as complex, research, planning, or quick under the other rules.",
+      "use": {
+        "harness": "pi",
+        "model": "openai-codex/gpt-5.6-sol",
+        "effort": "medium"
+      },
+      "why": "Captain wants normal implementation work on GPT-5.6 Sol through Pi at Medium reasoning."
+    },
+    {
+      "when": "The task is quick or lightweight: a small mechanical change, a trivial fix, or a folder/code search that needs little reasoning.",
+      "use": {
+        "harness": "pi",
+        "model": "xai-auth/grok-4.5",
+        "effort": "low"
+      },
+      "why": "Captain wants quick tasks and folder searches on Grok 4.5 through Pi at low reasoning (fast and cheap); the explicit xai-auth provider route is smoke-tested."
+    }
+  ],
+  "default": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-5.6-sol",
+    "effort": "medium"
+  }
+}

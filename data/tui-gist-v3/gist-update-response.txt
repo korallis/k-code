@@ -1,0 +1,70 @@
+id: e43956fd375efa96ea2c56529e49d4fd
+files:
+  LICENSE:
+    filename: LICENSE
+    type: text/plain
+    language: Text
+    size: 1064
+    truncated: false
+    content: "MIT License\n\nCopyright (c) 2026 Kun Chen\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE."
+    encoding: utf-8
+  README.md:
+    filename: README.md
+    type: text/markdown
+    language: Markdown
+    size: 10166
+    truncated: false
+    content: "# Reproduce a flicker-free live terminal dashboard\n\nThis guide reverse-engineers Firstmate’s **`fm-validation`** live terminal dashboard so you can rebuild the same *observable* behavior in your own tooling.\n\nIt is written for operators and tool authors **outside** any one machine. It separates:\n\n| Layer | Examples |\n| --- | --- |\n| **Reusable mechanics** | Frame pad, CSI home + clear-to-end, `sleep` pacing, TTY colors, trap cleanup |\n| **Firstmate-specific helpers** | `state/*.meta`, `fm-crew-state.sh`, no-mistakes run-steps, Herdr `fm-dashboard-launch.sh` |\n\nYou do **not** need Firstmate installed to run the reference scripts in this gist.\n\n---\n\n## Prerequisites\n\n- **Bash** 3.2+ (macOS stock Bash is fine) or Bash 4+/5\n- A **TTY** for the live loop (or use single-frame mode for scripts/CI)\n- Optional: `tput` (for columns / cursor hide; falls back to env / ANSI)\n- Optional: any host that can run a long-lived process in a pane/tab (tmux, Herdr, Zellij, iTerm split, …)\n\nNo root, no cloud API, no tokens.\n\n---\n\n## What the dashboard does (observable behavior)\n\n1. **Discovers** every in-flight task from a directory of small metadata files.\n2. **Reads current state** for each task from an accurate reader (not a stale event log tail alone).\n3. **Composes** one complete screenful: header, column labels, one row per task, footer with count + clock.\n4. **Repaints without flicker**: move cursor home, write the whole frame, clear from cursor to end of screen.\n5. **Waits** a fixed interval with `sleep`, then repeats until Ctrl-C.\n6. **Restores** the cursor on exit.\n\nOn Firstmate, the accurate reader is `fm-crew-state.sh` (no-mistakes run-step first, then pane busy, then status-log fallback). In this gist, a **pluggable** `fake-state.sh` stands in so the render loop is independent.\n\n---\n\n## Proven rendering rules (do not “improve” these away)\n\n### Rule 1 — Full padded frame, then home + clear-to-end\n\n```bash\n# once at startup (optional)\nprintf '\\033[2J'\n\n# every tick\nprintf '\\033... (truncated)"
+    encoding: utf-8
+  "fake-state.sh":
+    filename: fake-state.sh
+    type: application/x-sh
+    language: Shell
+    size: 498
+    truncated: false
+    content: "#!/usr/bin/env bash\n# fake-state.sh - demo stand-in for Firstmate's fm-crew-state.sh\n# Prints one parseable line: state: WORD · source: LABEL · note\nset -u\nid=\"${1:-}\"\ncase \"$id\" in\n  alpha-a1) echo \"state: working · source: demo · review (running)\" ;;\n  beta-b2)  echo \"state: parked · source: demo · awaiting_approval\" ;;\n  demo-x1)  echo \"state: validating · source: demo · doing the thing (running)\" ;;\n  *)        echo \"state: unknown · source: demo · no sample for ${id:-?}\" ;;\nesac"
+    encoding: utf-8
+  "live-status-dashboard.sh":
+    filename: live-status-dashboard.sh
+    type: application/x-sh
+    language: Shell
+    size: 3690
+    truncated: false
+    content: "#!/usr/bin/env bash\n# live-status-dashboard.sh - portable flicker-free multi-task status TUI\n# Pattern matching Firstmate's fm-validation-dashboard (compose + home + clear-to-end; sleep pacing).\n#\n# Usage:\n#   HOME_DIR=./demo-home ./live-status-dashboard.sh [interval-seconds]\n#   ONCE=1 HOME_DIR=./demo-home ./live-status-dashboard.sh\n#\n# Env:\n#   HOME_DIR   directory containing state/*.meta  (default: parent of this script)\n#   STATE_CMD  executable that prints \"state: WORD · source: S · NOTE\" for id $1\n#              (default: sibling fake-state.sh if present)\n#   ONCE=1     single frame then exit\nset -uo pipefail\n\nSCRIPT_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\nHOME_DIR=\"${HOME_DIR:-$(cd \"$SCRIPT_DIR\" && pwd)}\"\nSTATE_DIR=\"$HOME_DIR/state\"\nINTERVAL=\"${1:-4}\"\nSTATE_CMD=\"${STATE_CMD:-$SCRIPT_DIR/fake-state.sh}\"\n\nif [ -t 1 ]; then\n  R=$'\\033[0m'; DIM=$'\\033[2m'; B=$'\\033[1m'\n  CY=$'\\033[36m'; GN=$'\\033[32m'; YE=$'\\033[33m'; RE=$'\\033[31m'; GY=$'\\033[90m'\nelse\n  R=; DIM=; B=; CY=; GN=; YE=; RE=; GY=\nfi\n\ncleanup() { printf '\\033[?25h'; tput cnorm 2>/dev/null || true; printf '\\n'; exit 0; }\ntrap cleanup INT TERM\n\nterm_cols() { tput cols 2>/dev/null || echo \"${COLUMNS:-80}\"; }\n\nmeta_field() { grep -m1 \"^$2=\" \"$1\" 2>/dev/null | cut -d= -f2-; }\n\nstatus_word_note() { # <id> -> \"word\\tnote\"\n  local line word note\n  if [ -x \"$STATE_CMD\" ] || [ -f \"$STATE_CMD\" ]; then\n    line=\"$(\"$STATE_CMD\" \"$1\" 2>/dev/null || true)\"\n  else\n    line=\"state: unknown · source: none · no STATE_CMD\"\n  fi\n  word=\"$(printf '%s' \"$line\" | sed -n 's/^state: *\\([a-z-]*\\).*/\\1/p')\"\n  note=\"$(printf '%s' \"$line\" | sed -n 's/.*· \\([^·]*\\)$/\\1/p')\"\n  [ -z \"$word\" ] && word=\"unknown\"\n  printf '%s\\t%s' \"$word\" \"$note\"\n}\n\ncolor_for() {\n  case \"$1\" in\n    done|passed|merged) printf '%s' \"$GN\" ;;\n    needs-decision|blocked|paused|resolved|parked) printf '%s' \"$YE\" ;;\n    failed|stale) printf '%s' \"$RE\" ;;\n    working|validating) printf '%s' \"$CY\" ;;\n    *) printf '%s' \"$R\" ;;\n  esac\n}\n\ncompose() {\n ... (truncated)"
+    encoding: utf-8
+  "test-dashboard.sh":
+    filename: test-dashboard.sh
+    type: application/x-sh
+    language: Shell
+    size: 1446
+    truncated: false
+    content: "#!/usr/bin/env bash\n# Hermetic smoke tests for live-status-dashboard.sh (ONCE mode).\nset -uo pipefail\n\nROOT=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\nDASH=\"$ROOT/live-status-dashboard.sh\"\nfail=0\nstrip() { sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g'; }\n\nwork=\"$(mktemp -d)\"\ntrap 'rm -rf \"$work\"' EXIT\nmkdir -p \"$work/state\"\ncp \"$DASH\" \"$ROOT/fake-state.sh\" \"$work/\" 2>/dev/null || true\ncp \"$DASH\" \"$work/live-status-dashboard.sh\"\ncp \"$ROOT/fake-state.sh\" \"$work/fake-state.sh\"\nchmod +x \"$work/live-status-dashboard.sh\" \"$work/fake-state.sh\"\n\n# (a) empty fleet\nout=\"$(ONCE=1 HOME_DIR=\"$work\" \"$work/live-status-dashboard.sh\" 2>&1 | strip)\"\nif printf '%s' \"$out\" | grep -q \"no tasks in flight\"; then\n  echo \"PASS (a) empty fleet\"\nelse\n  echo \"FAIL (a) empty fleet: $out\"; fail=1\nfi\n\n# (b)+(c) one task\ncat > \"$work/state/demo-x1.meta\" <<'META'\nproject=/tmp/example-projects/sample-app\nharness=grok\nkind=ship\nMETA\nout=\"$(ONCE=1 HOME_DIR=\"$work\" STATE_CMD=\"$work/fake-state.sh\" \"$work/live-status-dashboard.sh\" 2>&1 | strip)\"\nif printf '%s' \"$out\" | grep -q \"demo-x1\" \\\n   && printf '%s' \"$out\" | grep -q \"sample-app\" \\\n   && printf '%s' \"$out\" | grep -q \"grok\" \\\n   && printf '%s' \"$out\" | grep -q \"validating\"; then\n  echo \"PASS (b) one task rendered\"\nelse\n  echo \"FAIL (b) one task: $out\"; fail=1\nfi\nif printf '%s' \"$out\" | grep -q \"doing the thing\"; then\n  echo \"PASS (c) state note surfaced\"\nelse\n  echo \"FAIL (c) note: $out\"; fail=1\nfi\n\nexit \"$fail\""
+    encoding: utf-8
+public: false
+created_at: "2026-07-13T20:58:53Z"
+updated_at: "2026-07-13T20:59:46Z"
+description: Reproduce a flicker-free live terminal dashboard (Firstmate fm-validation pattern)
+comments: 0
+user: null
+comments_enabled: true
+owner:
+  login: korallis
+  id: 7937632
+  type: User
+forks: []
+history[2]:
+  - user: korallis
+    version: 92263aedcc5faabf47abb57ef0cee4c559a9aaf8
+    committed_at: "2026-07-13T20:59:46Z"
+    change_status:
+      total: 248
+      additions: 247
+      deletions: 1
+  - user: korallis
+    version: e57e6da9d6a5f12612c644b44a9499582e925e17
+    committed_at: "2026-07-13T20:58:53Z"
+    change_status:
+      total: 228
+      additions: 228
+      deletions: 0
+truncated: false

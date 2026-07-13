@@ -1,0 +1,11 @@
+        friction={0}
+        restitution={0.1}
+        frictionCombineRule={CoefficientCombineRule.Min}
+        restitutionCombineRule={CoefficientCombineRule.Max}
+      />
+      <Suspense fallback={null}>
+        {/* Keep the seven nearby Race opponents inside the Tier-A draw budget. */}
+        <CraftVisualMesh family={family} useGlbLod={false} farOnly />
+      </Suspense>
+    </RigidBody>
+  );
