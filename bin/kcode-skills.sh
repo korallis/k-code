@@ -346,8 +346,8 @@ preflight_threejs_marker() {
 }
 
 promote_restore_plan() {
-  local home=$1 plan=$2
-  python3 - "$home" "$plan" <<'PY'
+  local home=$1
+  python3 - "$home" "$ROOT" "$RESTORE_MANIFEST" <<'PY'
 import ctypes
 import errno
 import hashlib
@@ -358,7 +358,7 @@ import stat
 import subprocess
 import sys
 
-home, plan = map(os.path.abspath, sys.argv[1:])
+home, root, manifest = map(os.path.abspath, sys.argv[1:])
 flags = os.O_RDONLY | os.O_DIRECTORY
 if hasattr(os, "O_NOFOLLOW"):
     flags |= os.O_NOFOLLOW
@@ -390,20 +390,95 @@ def rename_noreplace(source_parent_fd, source_name, parent_fd, name):
         raise OSError(error, os.strerror(error), name)
 
 
-def capture_tree(path):
+def capture_tree_at(parent_fd, name):
     captured = []
-    root = os.lstat(path)
-    captured.append(((), identity(root), root.st_mode))
-    if stat.S_ISDIR(root.st_mode):
-        for directory, names, files in os.walk(path, topdown=True, followlinks=False):
-            names.sort()
-            files.sort()
-            relative_directory = os.path.relpath(directory, path)
-            prefix = () if relative_directory == "." else tuple(relative_directory.split(os.path.sep))
-            for name in names + files:
-                value = os.lstat(os.path.join(directory, name))
-                captured.append((prefix + (name,), identity(value), value.st_mode))
+
+    def visit(owner_fd, entry_name, relative):
+        value = os.stat(entry_name, dir_fd=owner_fd, follow_symlinks=False)
+        captured.append((relative, identity(value), value.st_mode))
+        if stat.S_ISDIR(value.st_mode):
+            child_fd = os.open(entry_name, flags, dir_fd=owner_fd)
+            try:
+                if identity(os.fstat(child_fd)) != identity(value):
+                    raise OSError(errno.ESTALE, "staged directory identity changed", entry_name)
+                for child in sorted(os.listdir(child_fd)):
+                    visit(child_fd, child, relative + (child,))
+            finally:
+                os.close(child_fd)
+
+    visit(parent_fd, name, ())
     return captured
+
+
+def copy_entry(source, parent_fd, name):
+    value = os.stat(source, follow_symlinks=False)
+    mode = stat.S_IMODE(value.st_mode)
+    if stat.S_ISDIR(value.st_mode):
+        os.mkdir(name, mode=mode, dir_fd=parent_fd)
+        child_fd = os.open(name, flags, dir_fd=parent_fd)
+        try:
+            for child in sorted(os.listdir(source)):
+                copy_entry(os.path.join(source, child), child_fd, child)
+        finally:
+            os.close(child_fd)
+        return
+    if not stat.S_ISREG(value.st_mode):
+        raise OSError(errno.EPERM, "snapshot staging accepts only files and directories", source)
+    source_flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        source_flags |= os.O_NOFOLLOW
+    source_fd = os.open(source, source_flags)
+    destination_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode, dir_fd=parent_fd)
+    try:
+        while True:
+            block = os.read(source_fd, 1024 * 1024)
+            if not block:
+                break
+            view = memoryview(block)
+            while view:
+                written = os.write(destination_fd, view)
+                view = view[written:]
+    finally:
+        os.close(destination_fd)
+        os.close(source_fd)
+
+
+def write_entry(parent_fd, name, content):
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent_fd)
+    try:
+        data = content.encode()
+        while data:
+            written = os.write(fd, data)
+            data = data[written:]
+    finally:
+        os.close(fd)
+
+
+def remove_staging(parent_fd, staging_fd, staging_name, expected):
+    if identity(os.fstat(staging_fd)) != expected:
+        raise OSError(errno.ESTALE, "staging directory identity changed", staging_name)
+
+    def empty(directory_fd):
+        for name in os.listdir(directory_fd):
+            value = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if stat.S_ISDIR(value.st_mode):
+                child_fd = os.open(name, flags, dir_fd=directory_fd)
+                try:
+                    if identity(os.fstat(child_fd)) != identity(value):
+                        raise OSError(errno.ESTALE, "staging child identity changed", name)
+                    empty(child_fd)
+                finally:
+                    os.close(child_fd)
+                os.rmdir(name, dir_fd=directory_fd)
+            else:
+                os.unlink(name, dir_fd=directory_fd)
+
+    empty(staging_fd)
+    os.close(staging_fd)
+    value = os.stat(staging_name, dir_fd=parent_fd, follow_symlinks=False)
+    if identity(value) != expected:
+        raise OSError(errno.ESTALE, "staging directory replaced before cleanup", staging_name)
+    os.rmdir(staging_name, dir_fd=parent_fd)
 
 
 def content_signature(parent_fd, name):
@@ -642,45 +717,84 @@ def run_hook(variable, destination, number):
 root_fd = os.open(os.path.sep, flags)
 fds[()] = root_fd
 validations = []
+staging_fd = None
+staging_parent_fd = None
+staging_name = None
+staging_expected = None
 try:
     home_parts = tuple(part for part in home.split(os.path.sep) if part)
+    staging_parent_fd = os.dup(root_fd)
+    existing_depth = 0
+    for component in home_parts[:-1]:
+        try:
+            child_fd = os.open(component, flags, dir_fd=staging_parent_fd)
+        except FileNotFoundError:
+            break
+        os.close(staging_parent_fd)
+        staging_parent_fd = child_fd
+        existing_depth += 1
+    run_hook("KCODE_RESTORE_TEST_AFTER_STAGING_PARENT_OPEN_HOOK", home, existing_depth)
+    staging_name = f".kcode-restore-{os.getpid()}-{secrets.token_hex(12)}"
+    os.mkdir(staging_name, mode=0o700, dir_fd=staging_parent_fd)
+    staging_fd = os.open(staging_name, flags, dir_fd=staging_parent_fd)
+    staging_expected = identity(os.fstat(staging_fd))
+
+    rows = []
+    threejs = {"claude": [], "codex": []}
+    with open(manifest, encoding="utf-8") as source_rows:
+        for row in source_rows:
+            if not row.strip() or row.startswith("#"):
+                continue
+            source, target, name = row.rstrip("\n").split("\t")
+            target_root = {
+                "generic": ".agents/skills",
+                "claude": ".claude/skills",
+                "codex": ".codex/skills",
+                "grok": ".grok/skills",
+            }[target]
+            destination = os.path.join(home, target_root, name)
+            staged_name = f"skill-{len(rows) + 1}"
+            copy_entry(os.path.join(root, source), staging_fd, staged_name)
+            rows.append((staged_name, destination))
+            if target in threejs and source.startswith("skill-snapshot/vendor/threejs-game-skills/"):
+                threejs[target].append(name)
+    for target in ("claude", "codex"):
+        if not threejs[target]:
+            continue
+        staged_name = f"marker-{target}"
+        write_entry(staging_fd, staged_name, "\n".join(sorted(threejs[target])) + "\n")
+        rows.append((staged_name, os.path.join(home, f".{target}/skills/.threejs-game-skills-managed")))
+
+    hook = os.environ.get("KCODE_RESTORE_TEST_HOOK")
+    if hook:
+        subprocess.run((hook, home), check=True)
     open_directory(home_parts)
-    with open(plan, encoding="utf-8") as rows:
-        for number, row in enumerate(rows, 1):
-            source, destination = row.rstrip("\n").split("\t", 1)
-            relative = os.path.relpath(destination, home)
-            if relative == os.pardir or relative.startswith(os.pardir + os.path.sep):
-                raise OSError(errno.EPERM, "restore destination escapes requested home", destination)
-            parts = tuple(part for part in relative.split(os.path.sep) if part)
-            parent_fd = open_directory(home_parts + parts[:-1])
-            name = parts[-1]
-            source_parent = os.open(os.path.dirname(source), flags)
-            try:
-                expected_signature = content_signature(source_parent, os.path.basename(source))
-            finally:
-                os.close(source_parent)
-            try:
-                os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                captured = capture_tree(source)
-                source_parent = os.open(os.path.dirname(source), flags)
-                try:
-                    rename_noreplace(source_parent, os.path.basename(source), parent_fd, name)
-                finally:
-                    os.close(source_parent)
-                created_paths.append((parent_fd, name, captured))
-                run_hook("KCODE_RESTORE_TEST_AFTER_RENAME_HOOK", destination, number)
-                value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-                if identity(value) != captured[0][1]:
-                    raise OSError(errno.ESTALE, "promoted path identity changed", destination)
-                run_hook("KCODE_RESTORE_TEST_AFTER_PROMOTE_HOOK", destination, number)
-                fail_after = os.environ.get("KCODE_RESTORE_TEST_FAIL_AFTER")
-                if fail_after and number == int(fail_after):
-                    raise OSError(errno.EIO, "injected restore promotion failure", destination)
-            else:
-                if content_signature(parent_fd, name) != expected_signature:
-                    raise OSError(errno.ESTALE, "existing destination changed after preflight", destination)
-            validations.append((parent_fd, name, expected_signature, destination))
+    for number, (staged_name, destination) in enumerate(rows, 1):
+        relative = os.path.relpath(destination, home)
+        if relative == os.pardir or relative.startswith(os.pardir + os.path.sep):
+            raise OSError(errno.EPERM, "restore destination escapes requested home", destination)
+        parts = tuple(part for part in relative.split(os.path.sep) if part)
+        parent_fd = open_directory(home_parts + parts[:-1])
+        name = parts[-1]
+        expected_signature = content_signature(staging_fd, staged_name)
+        try:
+            os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            captured = capture_tree_at(staging_fd, staged_name)
+            rename_noreplace(staging_fd, staged_name, parent_fd, name)
+            created_paths.append((parent_fd, name, captured))
+            run_hook("KCODE_RESTORE_TEST_AFTER_RENAME_HOOK", destination, number)
+            value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if identity(value) != captured[0][1]:
+                raise OSError(errno.ESTALE, "promoted path identity changed", destination)
+            run_hook("KCODE_RESTORE_TEST_AFTER_PROMOTE_HOOK", destination, number)
+            fail_after = os.environ.get("KCODE_RESTORE_TEST_FAIL_AFTER")
+            if fail_after and number == int(fail_after):
+                raise OSError(errno.EIO, "injected restore promotion failure", destination)
+        else:
+            if content_signature(parent_fd, name) != expected_signature:
+                raise OSError(errno.ESTALE, "existing destination changed after preflight", destination)
+        validations.append((parent_fd, name, expected_signature, destination))
     run_hook("KCODE_RESTORE_TEST_BEFORE_FINAL_VALIDATION_HOOK", home, len(validations))
     for _, name, expected_signature, destination in validations:
         relative = os.path.relpath(destination, home)
@@ -698,14 +812,18 @@ except Exception as original:
         raise RuntimeError(f"restore failed and rollback was incomplete: {details}") from original
     raise
 finally:
+    if staging_fd is not None:
+        remove_staging(staging_parent_fd, staging_fd, staging_name, staging_expected)
+    if staging_parent_fd is not None:
+        os.close(staging_parent_fd)
     for fd in reversed(tuple(fds.values())):
         os.close(fd)
 PY
 }
 
 restore_home() {
-  local home=$1 requested_home source target name directory destination expected stage link
-  local count=0 transaction transaction_parent plan transaction_active=0
+  local home=$1 requested_home source target name directory link
+  local count=0
   [ -n "$home" ] || fail 'restore requires a non-empty --home path'
   case "$home" in
     *$'\t'*|*$'\n'*) fail 'restore home must not contain tabs or newlines' ;;
@@ -731,44 +849,7 @@ PY
   preflight_threejs_marker "$home" claude
   preflight_threejs_marker "$home" codex
 
-  transaction_parent=$(dirname "$home")
-  while [ ! -d "$transaction_parent" ]; do
-    transaction_parent=$(dirname "$transaction_parent")
-  done
-  transaction=$(mktemp -d "$transaction_parent/.kcode-restore.XXXXXX")
-  plan="$transaction/plan.tsv"
-  : > "$plan"
-  transaction_active=1
-  trap 'if [ "$transaction_active" -eq 1 ]; then rm -rf -- "$transaction"; fi' EXIT
-
-  count=0
-  while IFS=$'\t' read -r source target name; do
-    count=$((count + 1))
-    directory=$(target_dir "$home" "$target")
-    destination="$directory/$name"
-    stage="$transaction/skill-$count"
-    cp -R "$ROOT/$source" "$stage"
-    printf '%s\t%s\n' "$stage" "$destination" >> "$plan"
-  done < <(manifest_rows)
-
-  for target in claude codex; do
-    expected=$(threejs_marker_content "$target")
-    [ -n "$expected" ] || continue
-    directory=$(target_dir "$home" "$target")
-    destination="$directory/.threejs-game-skills-managed"
-    stage="$transaction/marker-$target"
-    printf '%s\n' "$expected" > "$stage"
-    printf '%s\t%s\n' "$stage" "$destination" >> "$plan"
-  done
-
-  if [ -n "${KCODE_RESTORE_TEST_HOOK:-}" ]; then
-    "$KCODE_RESTORE_TEST_HOOK" "$home"
-  fi
-  promote_restore_plan "$home" "$plan"
-
-  transaction_active=0
-  trap - EXIT
-  rm -rf -- "$transaction"
+  promote_restore_plan "$home"
   printf 'kcode-skills: restored %s placements under %s.\n' "$count" "$home"
   printf 'kcode-skills: harness-managed resources remain pinned in skill-snapshot/harness-managed.tsv.\n'
 }

@@ -134,6 +134,34 @@ EOF_HOOK
   chmod +x "$hook"
 }
 
+test_restore_staging_parent_swap_cannot_redirect_io() {
+  local temp anchor displaced outside home hook out rc
+  temp=$(physical_temp_root kcode-skills-staging-parent-race)
+  anchor="$temp/anchor"
+  displaced="$temp/anchor-original"
+  outside="$temp/outside"
+  home="$anchor/home"
+  hook="$temp/swap-staging-parent"
+  mkdir -p "$anchor" "$outside"
+  cat > "$hook" <<EOF_HOOK
+#!/usr/bin/env bash
+set -euo pipefail
+mv "$anchor" "$displaced"
+ln -s "$outside" "$anchor"
+EOF_HOOK
+  chmod +x "$hook"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_AFTER_STAGING_PARENT_OPEN_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore accepted a swapped staging parent'
+  [ -z "$(find "$outside" -mindepth 1 -print -quit)" ] \
+    || fail "staging parent swap redirected writes outside the requested hierarchy: $out"
+  [ -z "$(find "$displaced" -name '.kcode-restore-*' -print -quit)" ] \
+    || fail 'staging parent swap left descriptor-owned staging behind'
+  pass 'staging remains descriptor-bound across parent swaps and cleans safely'
+}
+
 test_restore_revalidates_promotion_ancestors() {
   local temp home outside hook out rc
   temp=$(physical_temp_root kcode-skills-promotion-symlink)
@@ -459,6 +487,7 @@ test_clean_home_restore
 test_restore_refuses_different_existing_skill
 test_restore_preflights_late_marker_conflict
 test_restore_rolls_back_late_write_failure
+test_restore_staging_parent_swap_cannot_redirect_io
 test_restore_revalidates_promotion_ancestors
 test_restore_preserves_concurrent_destination
 test_restore_rollback_preserves_concurrent_child
