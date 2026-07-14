@@ -672,9 +672,11 @@ def copy_snapshot_directory(
     source_value = os.fstat(source_fd)
     if not stat.S_ISDIR(source_value.st_mode):
         raise OSError(errno.ENOTDIR, "snapshot source is not a directory", relative)
-    os.mkdir(name, mode=stat.S_IMODE(source_value.st_mode), dir_fd=parent_fd)
+    if stat.S_IMODE(source_value.st_mode) != 0o755:
+        raise OSError(errno.EBADMSG, "snapshot directory mode mismatch during copy", relative)
+    os.mkdir(name, mode=0o755, dir_fd=parent_fd)
     destination_fd = os.open(name, flags, dir_fd=parent_fd)
-    os.fchmod(destination_fd, stat.S_IMODE(source_value.st_mode))
+    os.fchmod(destination_fd, 0o755)
     destination_value = os.fstat(destination_fd)
     named_value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     if identity(destination_value) != identity(named_value):
@@ -751,8 +753,11 @@ def copy_snapshot_directory(
             encountered.add(child_relative)
     finally:
         os.close(destination_fd)
-    if identity(os.fstat(source_fd)) != identity(source_value):
+    final_source_value = os.fstat(source_fd)
+    if identity(final_source_value) != identity(source_value):
         raise OSError(errno.ESTALE, "snapshot source changed during copy", relative)
+    if stat.S_IMODE(final_source_value.st_mode) != 0o755:
+        raise OSError(errno.EBADMSG, "snapshot directory mode changed during copy", relative)
     expected_paths = {
         path for path in expected_hashes if path.startswith(relative + "/")
     }

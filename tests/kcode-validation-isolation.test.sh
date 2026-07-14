@@ -7,22 +7,116 @@ set -euo pipefail
 
 CONFIG="$ROOT/.no-mistakes.yaml"
 
-resolved_args() {
-  awk '
-    /^agent_args_override:/ {in_overrides=1; next}
-    in_overrides && /^  pi:/ {in_pi=1; next}
-    in_pi && /^    - / {sub(/^    - /, ""); print; next}
-    in_pi {exit}
-  ' "$CONFIG"
+stop_isolated_no_mistakes() {
+  local run_pid=${1:-} daemon_pid=${2:-}
+  if [ -n "$run_pid" ]; then
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+  fi
+  if [ -n "$daemon_pid" ]; then
+    kill "$daemon_pid" 2>/dev/null || true
+    wait "$daemon_pid" 2>/dev/null || true
+  fi
 }
 
 test_validation_profile_disables_extensions() {
-  local actual expected
-  actual=$(resolved_args)
-  expected=$(printf '%s\n' --model openai-codex/gpt-5.6-sol --thinking medium --no-extensions)
-  [ "$actual" = "$expected" ] \
-    || fail "resolved Pi validation arguments changed: $actual"
-  pass 'repository validation keeps the intended Pi model and disables extensions'
+  local temp home project origin fakebin argv daemon_log push_log daemon_pid run_pid out i
+  command -v no-mistakes >/dev/null 2>&1 || fail 'no-mistakes is required for validation isolation coverage'
+  out=$(NO_MISTAKES_NO_UPDATE_CHECK=1 no-mistakes --version 2>&1)
+  assert_contains "$out" 'v1.36.' 'validation isolation must exercise the supported no-mistakes v1.36 resolver'
+
+  temp=$(mktemp -d /tmp/kcv.XXXXXX)
+  FM_TEST_CLEANUP_DIRS+=("$temp")
+  trap fm_test_cleanup EXIT
+  home="$temp/home"
+  project="$temp/project"
+  origin="$temp/origin.git"
+  fakebin=$(fm_fakebin "$temp")
+  argv="$temp/pi-argv"
+  daemon_log="$temp/daemon.log"
+  push_log="$temp/push.log"
+  mkdir -p "$home/.no-mistakes" "$project"
+  export NM_HOME="$home/.no-mistakes"
+  cat > "$home/.no-mistakes/config.yaml" <<EOF_CONFIG
+agent: pi
+agent_path_override:
+  pi: $fakebin/pi
+agent_args_override:
+  pi:
+    - --model
+    - openai-codex/gpt-5.6-sol
+    - --thinking
+    - medium
+    - --no-extensions
+EOF_CONFIG
+  cat > "$fakebin/pi" <<EOF_PI
+#!/usr/bin/env bash
+printf '%q ' "\$@" >> '$argv'
+printf '\n' >> '$argv'
+printf '%s\n' '{"summary":"captured validation invocation"}'
+EOF_PI
+  chmod +x "$fakebin/pi"
+
+  fm_git_identity
+  git -C "$project" init -q -b main
+  cp "$CONFIG" "$project/.no-mistakes.yaml"
+  cat >> "$project/.no-mistakes.yaml" <<'EOF_REPO_CONFIG'
+agent: pi
+EOF_REPO_CONFIG
+  printf '%s\n' '# resolver fixture' > "$project/README.md"
+  git -C "$project" add .no-mistakes.yaml README.md
+  git -C "$project" commit -qm initial
+  git clone --quiet --bare "$project" "$origin"
+  git -C "$project" remote add origin "file://$origin"
+  git -C "$project" push -q -u origin main
+  git -C "$project" remote set-head origin main
+
+  HOME="$home" NO_MISTAKES_NO_UPDATE_CHECK=1 \
+    no-mistakes daemon run --root "$home/.no-mistakes" >"$daemon_log" 2>&1 &
+  daemon_pid=$!
+  run_pid=
+  trap 'stop_isolated_no_mistakes "${run_pid:-}" "${daemon_pid:-}"; fm_test_cleanup' EXIT
+  for i in $(seq 1 100); do
+    HOME="$home" NO_MISTAKES_NO_UPDATE_CHECK=1 no-mistakes daemon status >/dev/null 2>&1 && break
+    kill -0 "$daemon_pid" 2>/dev/null || fail "isolated no-mistakes daemon exited: $(cat "$daemon_log")"
+    sleep 0.05
+  done
+  HOME="$home" NO_MISTAKES_NO_UPDATE_CHECK=1 no-mistakes daemon status >/dev/null 2>&1 \
+    || fail "isolated no-mistakes daemon did not become ready: $(cat "$daemon_log")"
+
+  out=$(cd "$project" && HOME="$home" NO_MISTAKES_NO_UPDATE_CHECK=1 \
+    no-mistakes init 2>&1 < /dev/null) \
+    || fail "isolated no-mistakes init failed: $out; $(cat "$daemon_log")"
+  git -C "$project" switch -q -c validation-fixture
+  printf '%s\n' 'feature' >> "$project/README.md"
+  git -C "$project" add README.md
+  git -C "$project" commit -qm feature
+  (cd "$project" && HOME="$home" KCODE_PI_ARGV="$argv" NO_MISTAKES_NO_UPDATE_CHECK=1 \
+    git push no-mistakes HEAD:refs/heads/validation-fixture >"$push_log" 2>&1)
+  (cd "$project" && HOME="$home" KCODE_PI_ARGV="$argv" NO_MISTAKES_NO_UPDATE_CHECK=1 \
+    no-mistakes axi run --intent 'verify repository-scoped Pi arguments' \
+      --skip rebase,test,document,lint,push,pr,ci >>"$push_log" 2>&1) &
+  run_pid=$!
+  for i in $(seq 1 400); do
+    grep -q -- '--no-extensions' "$argv" 2>/dev/null && break
+    kill -0 "$daemon_pid" 2>/dev/null || fail "isolated no-mistakes daemon exited: $(cat "$daemon_log")"
+    if ! kill -0 "$run_pid" 2>/dev/null; then
+      wait "$run_pid" || true
+      fail "isolated gate push ended before invoking isolated Pi: $(cat "$argv" 2>/dev/null || true); $(cat "$push_log"); $(cat "$daemon_log")"
+    fi
+    sleep 0.05
+  done
+  grep -q -- '--no-extensions' "$argv" 2>/dev/null \
+    || fail "no-mistakes did not invoke the isolated Pi command: $(cat "$push_log"); $(cat "$daemon_log")"
+  out=$(cat "$argv")
+  assert_contains "$out" '--model openai-codex/gpt-5.6-sol --thinking medium --no-extensions ' \
+    'resolved Pi command omitted repository-scoped isolation arguments'
+
+  stop_isolated_no_mistakes "$run_pid" "$daemon_pid"
+  run_pid=
+  daemon_pid=
+  trap 'fm_test_cleanup || true' EXIT
+  pass 'no-mistakes resolves the intended Pi model with extensions disabled'
 }
 
 test_print_mode_cannot_load_project_supervision_extensions() {

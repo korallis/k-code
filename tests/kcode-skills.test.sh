@@ -423,6 +423,38 @@ EOF_HOOK
   pass 'snapshot copy binds source modes to the authenticated manifest'
 }
 
+test_restore_rejects_source_directory_mode_change() {
+  local temp home hook source directory out rc
+  temp=$(physical_temp_root kcode-skills-source-directory-mode)
+  home="$temp/home"
+  hook="$temp/change-source-directory-mode"
+  source='skill-snapshot/vendor/rayfernando-skills/bootstrap-ios'
+  directory="$ROOT/$source/references"
+  cat > "$hook" <<EOF_HOOK
+#!/usr/bin/env bash
+set -euo pipefail
+[ "\$1" = '$source' ] || exit 0
+chmod 0777 '$directory'
+EOF_HOOK
+  chmod +x "$hook"
+  cleanup_source_directory_mode_fixture() {
+    chmod 0755 "$directory"
+  }
+  trap 'cleanup_source_directory_mode_fixture; fm_test_cleanup' EXIT
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_AFTER_SOURCE_OPEN_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  cleanup_source_directory_mode_fixture
+  trap 'fm_test_cleanup || true' EXIT
+  [ "$rc" -ne 0 ] || fail 'restore accepted a source directory mode changed after verification'
+  assert_contains "$out" 'snapshot directory mode mismatch during copy' \
+    'source directory mode race did not fail safe mode validation'
+  assert_absent "$home/.claude/skills/bootstrap-ios" \
+    'source directory mode race installed the changed skill'
+  pass 'snapshot copy normalizes and validates every source directory mode'
+}
+
 test_restore_rejects_source_file_omission() {
   local temp home hook source removed out rc
   temp=$(physical_temp_root kcode-skills-source-omission)
@@ -945,6 +977,7 @@ test_restore_rejects_replaced_home_after_staging
 test_restore_keeps_descriptor_owned_staging_on_name_swap
 test_restore_uses_open_verified_snapshot_sources
 test_restore_rejects_source_mode_change
+test_restore_rejects_source_directory_mode_change
 test_restore_rejects_source_file_omission
 test_restore_authenticates_control_bytes_before_verification
 test_restore_authenticates_open_control_manifest
