@@ -94,7 +94,8 @@ GI
 # Excluding a source path does not remove an old destination index entry.
 # Remove only index records so an ignored local product checkout remains intact.
 rm -f "$KCODE_DIR/.gitmodules"
-if git -C "$KCODE_DIR" ls-files -- projects | grep -q .; then
+tracked_projects=$(git -C "$KCODE_DIR" ls-files -- projects)
+if [ -n "$tracked_projects" ]; then
   git -C "$KCODE_DIR" rm -r --cached --ignore-unmatch -- projects >/dev/null
 fi
 
@@ -108,7 +109,8 @@ fi
 
 git -C "$KCODE_DIR" add -A
 
-if git -C "$KCODE_DIR" ls-files -- projects | grep -q .; then
+tracked_projects=$(git -C "$KCODE_DIR" ls-files -- projects)
+if [ -n "$tracked_projects" ]; then
   printf 'kcode-sync: refusing to continue with tracked projects/ entries\n' >&2
   exit 1
 fi

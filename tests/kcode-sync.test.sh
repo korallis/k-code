@@ -129,6 +129,28 @@ test_sync_preserves_local_products_but_removes_tracking() {
   pass 'sync removes stale product tracking while preserving local ignored checkouts and fork surfaces'
 }
 
+test_sync_removes_large_project_index() {
+  local temp live destination product log blob tracked
+  temp=$(fm_test_tmproot kcode-sync-large-index)
+  live="$temp/live"
+  destination="$temp/k-code"
+  product="$temp/product"
+  log="$temp/skill-manager.log"
+  build_fixture "$temp" "$live" "$destination" "$product"
+
+  blob=$(printf 'stale product entry\n' | git -C "$destination" hash-object -w --stdin)
+  for n in $(seq 1 12000); do
+    printf '100644 %s\tprojects/bulk/file-%05d\n' "$blob" "$n"
+  done | git -C "$destination" update-index --index-info
+
+  FM_HOME="$live" KCODE_DIR="$destination" KCODE_SKILL_USER_HOME="$temp/user" \
+    KCODE_SKILL_LOG="$log" KCODE_SYNC_DRY_RUN=1 "$SYNC" >/dev/null
+
+  tracked=$(git -C "$destination" ls-files -- projects)
+  [ -z "$tracked" ] || fail 'sync left entries from a large projects index'
+  pass 'sync deterministically removes a large tracked projects index'
+}
+
 test_sync_rejects_non_project_gitlink() {
   local temp live destination product log out rc
   temp=$(fm_test_tmproot kcode-sync-gitlink)
@@ -161,4 +183,5 @@ test_sync_rejects_non_project_gitlink() {
 }
 
 test_sync_preserves_local_products_but_removes_tracking
+test_sync_removes_large_project_index
 test_sync_rejects_non_project_gitlink
