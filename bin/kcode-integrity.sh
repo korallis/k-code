@@ -227,9 +227,9 @@ if (
     or research_use[2] != expected_third
 ):
     raise SystemExit("kcode-integrity: research triad must fan out all three Pi profiles")
-why = research_rules[0].get("why", "")
-if "claude-bridge/claude-opus-4-8" not in why or "never the standalone Claude harness" not in why:
-    raise SystemExit("kcode-integrity: research triad must document the Pi bridge Opus fallback")
+serialized_dispatch = json.dumps(dispatch).lower()
+if any(term in serialized_dispatch for term in ("askclaude", "claude-opus", "standalone claude")):
+    raise SystemExit("kcode-integrity: dispatch policy contains a forbidden alternate Claude route")
 
 required = ["npm:pi-xai-oauth@1.3.3", "npm:pi-claude-bridge@0.6.2"]
 packages = package_settings.get("packages")

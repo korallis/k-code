@@ -101,6 +101,18 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 snapshot = root / "skill-snapshot"
+reviewed_metadata = {
+    "sources.tsv": "384febd898aecc55eaa545ccfda14dc185499cbfbdc73c1c01949690525769b5",
+    "roots.tsv": "3a775a745274e2528b963da447d7e6fcc1d44174978d5f1e27ed7fe6243178b9",
+    "overlays.tsv": "424615d85fb45f72eb299f357d0a1a9983e652d4329ab40645eb3ee4d08b95f2",
+    "harness-managed.tsv": "6e2ef73c55151c30a02050cadedc920ae003b35e5687ec699f28365bc11bac59",
+    "restore.tsv": "0fe563712816612f50b5f1379d583d06143e4adad1e48fd5ec3a65e8f0356afa",
+    "modes.tsv": "c30273bff80c19f27dbd9d5dae8021589faf5104b00881f893e3be559b56e395",
+}
+for name, expected in reviewed_metadata.items():
+    actual = hashlib.sha256((snapshot / name).read_bytes()).hexdigest()
+    if actual != expected:
+        raise SystemExit(f"kcode-skills: reviewed provenance digest mismatch: {name}")
 
 
 def rows(name, fields):
@@ -640,6 +652,15 @@ def open_directory_at(root_directory_fd, components):
         raise
 
 
+def assert_named_directory_identity(root_directory_fd, components, expected):
+    fd = open_directory_at(root_directory_fd, components)
+    try:
+        if identity(os.fstat(fd)) != expected:
+            raise OSError(errno.ESTALE, "restore hierarchy identity changed", os.path.join(os.path.sep, *components))
+    finally:
+        os.close(fd)
+
+
 def copy_snapshot_directory(
     source_fd, parent_fd, name, relative, staged_relative, encountered=None
 ):
@@ -1094,12 +1115,18 @@ try:
         os.close(staging_parent_fd)
         staging_parent_fd = child_fd
         existing_depth += 1
+    staging_parent_parts = home_parts[:existing_depth]
+    staging_parent_expected = identity(os.fstat(staging_parent_fd))
     run_hook("KCODE_RESTORE_TEST_AFTER_STAGING_PARENT_OPEN_HOOK", home, existing_depth)
+    assert_named_directory_identity(root_fd, staging_parent_parts, staging_parent_expected)
+    if staging_parent_parts:
+        fds[staging_parent_parts] = os.dup(staging_parent_fd)
     staging_name, staging_fd, staging_expected = create_private_directory(
         staging_parent_fd, "kcode-restore"
     )
-    staging_path = os.path.join(os.path.sep, *home_parts[:existing_depth], staging_name)
+    staging_path = os.path.join(os.path.sep, *staging_parent_parts, staging_name)
     run_hook("KCODE_RESTORE_TEST_AFTER_STAGING_MKDIR_HOOK", staging_path, 0)
+    assert_named_directory_identity(root_fd, staging_parent_parts, staging_parent_expected)
 
     rows = []
     threejs = {"claude": [], "codex": []}
@@ -1148,6 +1175,7 @@ try:
     hook = os.environ.get("KCODE_RESTORE_TEST_HOOK")
     if hook:
         subprocess.run((hook, home), check=True)
+    assert_named_directory_identity(root_fd, staging_parent_parts, staging_parent_expected)
     open_directory(home_parts)
     for number, (staged_name, destination) in enumerate(rows, 1):
         relative = os.path.relpath(destination, home)

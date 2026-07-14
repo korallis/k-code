@@ -98,7 +98,13 @@ staging=\$1
   echo 'EXDEV regression: staging is outside the existing destination filesystem' >&2
   exit 18
 }
-[ "\$(stat -f %d "\$staging")" = "\$(stat -f %d '$home')" ]
+python3 - "\$staging" '$home' <<'PY'
+import os
+import sys
+
+if os.stat(sys.argv[1]).st_dev != os.stat(sys.argv[2]).st_dev:
+    raise SystemExit(1)
+PY
 EOF_HOOK
   chmod +x "$hook"
 
@@ -134,15 +140,22 @@ test_snapshot_rejects_corrupt_provenance() {
     rm -f "$backup"
   }
   trap 'cleanup_corrupt_provenance; fm_test_cleanup' EXIT
-  grep -v '^no-mistakes' "$backup" > "$ROOT/skill-snapshot/sources.tsv"
+  python3 - "$ROOT/skill-snapshot/sources.tsv" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+path.write_text(text.replace("ad9f3a71894a96f0af5b9e0fe238acda855d6478", "0000000000000000000000000000000000000000"), encoding="utf-8")
+PY
   rc=0
   out=$("$SKILLS" verify 2>&1) || rc=$?
   cleanup_corrupt_provenance
   trap 'fm_test_cleanup || true' EXIT
-  [ "$rc" -ne 0 ] || fail 'snapshot verification accepted missing source provenance'
-  assert_contains "$out" 'does not cover captured roots and vendor directories' \
-    'corrupt source provenance failure was not identified'
-  pass 'snapshot verification rejects corrupt provenance metadata'
+  [ "$rc" -ne 0 ] || fail 'snapshot verification accepted plausible coordinated provenance corruption'
+  assert_contains "$out" 'reviewed provenance digest mismatch: sources.tsv' \
+    'authenticated provenance failure was not identified'
+  pass 'snapshot verification authenticates reviewed provenance values'
 }
 
 test_restore_refuses_different_existing_skill() {
@@ -239,6 +252,35 @@ EOF_HOOK
   [ -z "$(find "$displaced" -name '.kcode-restore-*' -print -quit)" ] \
     || fail 'staging parent swap left descriptor-owned staging behind'
   pass 'staging remains descriptor-bound across parent swaps and cleans safely'
+}
+
+test_restore_rejects_replaced_home_after_staging() {
+  local temp home displaced hook out rc
+  temp=$(physical_temp_root kcode-skills-home-replacement)
+  home="$temp/home"
+  displaced="$temp/home-original"
+  hook="$temp/replace-home"
+  mkdir -p "$home"
+  cat > "$hook" <<EOF_HOOK
+#!/usr/bin/env bash
+set -euo pipefail
+mv '$home' '$displaced'
+mkdir '$home'
+printf 'foreign replacement\n' > '$home/foreign.txt'
+EOF_HOOK
+  chmod +x "$hook"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_AFTER_STAGING_MKDIR_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore accepted a replaced home after staging'
+  [ "$(cat "$home/foreign.txt")" = 'foreign replacement' ] \
+    || fail "restore changed the replacement home: $out"
+  [ -z "$(find "$home" -mindepth 1 ! -name foreign.txt -print -quit)" ] \
+    || fail 'restore promoted content into the replacement home'
+  [ -z "$(find "$displaced" -name '.kcode-restore-*' -print -quit)" ] \
+    || fail 'restore left descriptor-owned staging in the displaced home'
+  pass 'restore aborts when the requested home identity changes after staging'
 }
 
 test_restore_keeps_descriptor_owned_staging_on_name_swap() {
@@ -365,8 +407,8 @@ EOF_HOOK
   cleanup_control_baseline_fixture
   trap 'fm_test_cleanup || true' EXIT
   [ "$rc" -ne 0 ] || fail 'restore trusted control bytes changed before verification'
-  assert_contains "$out" 'restore manifest changed during verification' \
-    'pre-verification control change did not invalidate the authenticated baseline'
+  assert_contains "$out" 'reviewed provenance digest mismatch: restore.tsv' \
+    'pre-verification control change did not invalidate the reviewed baseline'
   assert_absent "$home" 'control baseline failure created the restore home'
   pass 'restore authenticates control bytes before structural verification'
 }
@@ -800,6 +842,7 @@ test_restore_refuses_different_existing_skill
 test_restore_preflights_late_marker_conflict
 test_restore_rolls_back_late_write_failure
 test_restore_staging_parent_swap_cannot_redirect_io
+test_restore_rejects_replaced_home_after_staging
 test_restore_keeps_descriptor_owned_staging_on_name_swap
 test_restore_uses_open_verified_snapshot_sources
 test_restore_rejects_source_file_omission
