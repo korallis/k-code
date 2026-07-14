@@ -32,6 +32,13 @@ managed_names() {
   ' "$MANAGED"
 }
 
+physical_temp_root() {
+  local parent temp
+  parent=$(cd "${TMPDIR:-/tmp}" && pwd -P)
+  temp=$(mktemp -d "$parent/$1.XXXXXX")
+  printf '%s\n' "$temp"
+}
+
 test_snapshot_verifies() {
   local out
   out=$($SKILLS verify)
@@ -42,7 +49,7 @@ test_snapshot_verifies() {
 
 test_clean_home_restore() {
   local temp home out
-  temp=$(fm_test_tmproot kcode-skills-restore)
+  temp=$(physical_temp_root kcode-skills-restore)
   home="$temp/home"
   out=$($SKILLS restore --home "$home")
   assert_contains "$out" 'restored 78 placements' 'restore did not install every captured placement'
@@ -61,7 +68,7 @@ test_clean_home_restore() {
 
 test_restore_refuses_different_existing_skill() {
   local temp home out rc
-  temp=$(fm_test_tmproot kcode-skills-collision)
+  temp=$(physical_temp_root kcode-skills-collision)
   home="$temp/home"
   mkdir -p "$home/.agents/skills/no-mistakes"
   printf 'local override\n' > "$home/.agents/skills/no-mistakes/SKILL.md"
@@ -77,7 +84,7 @@ test_restore_refuses_different_existing_skill() {
 
 test_restore_preflights_late_marker_conflict() {
   local temp home marker before after out rc
-  temp=$(fm_test_tmproot kcode-skills-late-collision)
+  temp=$(physical_temp_root kcode-skills-late-collision)
   home="$temp/home"
   marker="$home/.codex/skills/.threejs-game-skills-managed"
   mkdir -p "$(dirname "$marker")"
@@ -99,7 +106,7 @@ test_restore_preflights_late_marker_conflict() {
 
 test_restore_rolls_back_late_write_failure() {
   local temp home fakebin before after out rc
-  temp=$(fm_test_tmproot kcode-skills-write-failure)
+  temp=$(physical_temp_root kcode-skills-write-failure)
   home="$temp/home"
   fakebin="$temp/fakebin"
   mkdir -p "$home" "$fakebin"
@@ -126,7 +133,7 @@ EOF_MV
 
 test_restore_rejects_symlinked_ancestor() {
   local temp home outside out rc
-  temp=$(fm_test_tmproot kcode-skills-symlink-escape)
+  temp=$(physical_temp_root kcode-skills-symlink-escape)
   home="$temp/home"
   outside="$temp/outside"
   mkdir -p "$home" "$outside"
@@ -143,9 +150,27 @@ test_restore_rejects_symlinked_ancestor() {
   pass 'restore rejects ancestor symlinks without escaping its home'
 }
 
+test_restore_rejects_symlink_above_nonexistent_home() {
+  local temp outside home out rc
+  temp=$(physical_temp_root kcode-skills-home-ancestor-symlink)
+  outside="$temp/outside"
+  mkdir -p "$outside"
+  ln -s "$outside" "$temp/linked-parent"
+  home="$temp/linked-parent/missing/home"
+
+  rc=0
+  out=$($SKILLS restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore accepted a symlink above a nonexistent home'
+  assert_contains "$out" 'restore home contains a symlinked component' \
+    'requested-home ancestor refusal did not identify the unsafe path'
+  [ -z "$(find "$outside" -mindepth 1 -print -quit)" ] \
+    || fail 'restore wrote through a symlink above a nonexistent home'
+  pass 'restore validates requested-home ancestors before canonicalization'
+}
+
 test_verify_home_rejects_stale_marker() {
   local temp home marker out rc
-  temp=$(fm_test_tmproot kcode-skills-stale-marker)
+  temp=$(physical_temp_root kcode-skills-stale-marker)
   home="$temp/home"
   $SKILLS restore --home "$home" >/dev/null
   marker="$home/.codex/skills/.threejs-game-skills-managed"
@@ -180,7 +205,7 @@ test_manifest_covers_every_captured_source_once() {
 
 test_live_inventory_detects_unclassified_skill() {
   local temp home plugin_dir name out rc
-  temp=$(fm_test_tmproot kcode-skills-live)
+  temp=$(physical_temp_root kcode-skills-live)
   home="$temp/home"
   plugin_dir="$home/plugin-vercel"
   $SKILLS restore --home "$home" >/dev/null
@@ -226,6 +251,7 @@ test_restore_refuses_different_existing_skill
 test_restore_preflights_late_marker_conflict
 test_restore_rolls_back_late_write_failure
 test_restore_rejects_symlinked_ancestor
+test_restore_rejects_symlink_above_nonexistent_home
 test_verify_home_rejects_stale_marker
 test_manifest_covers_every_captured_source_once
 test_live_inventory_detects_unclassified_skill

@@ -248,6 +248,26 @@ print(os.path.realpath(sys.argv[1]))
 PY
 }
 
+reject_requested_home_symlinks() {
+  python3 - "$1" <<'PY'
+import os
+import sys
+
+path = sys.argv[1]
+current = os.path.sep if os.path.isabs(path) else os.getcwd()
+for component in path.split(os.path.sep):
+    if component in ("", "."):
+        continue
+    if component == "..":
+        current = os.path.dirname(current)
+        continue
+    current = os.path.join(current, component)
+    if os.path.lexists(current) and os.path.islink(current):
+        print(current)
+        raise SystemExit(1)
+PY
+}
+
 reject_symlink_components() {
   local home=$1 path=$2
   python3 - "$home" "$path" <<'PY'
@@ -358,9 +378,14 @@ rollback_restore() {
 }
 
 restore_home() {
-  local home=$1 requested_home source target name directory destination expected stage
+  local home=$1 requested_home source target name directory destination expected stage link
   local count=0 transaction transaction_parent plan created_paths created_dirs transaction_active=0
   [ -n "$home" ] || fail 'restore requires a non-empty --home path'
+  case "$home" in
+    *$'\t'*|*$'\n'*) fail 'restore home must not contain tabs or newlines' ;;
+  esac
+  link=$(reject_requested_home_symlinks "$home") \
+    || fail "restore home contains a symlinked component: $link"
   requested_home=$(python3 - "$home" <<'PY'
 import os
 import sys
@@ -368,14 +393,8 @@ import sys
 print(os.path.abspath(sys.argv[1]))
 PY
 )
-  [ ! -L "$requested_home" ] || fail "restore home must not be a symlink: $requested_home"
   home=$(absolute_path "$requested_home")
-  case "$home" in
-    *$'\t'*|*$'\n'*) fail 'restore home must not contain tabs or newlines' ;;
-  esac
   verify_snapshot >/dev/null
-  reject_symlink_components "$home" "$home" >/dev/null \
-    || fail "restore home contains a symlinked component: $home"
   preflight_parent "$home"
 
   while IFS=$'\t' read -r source target name; do
