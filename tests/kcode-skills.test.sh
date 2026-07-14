@@ -158,6 +158,44 @@ PY
   pass 'snapshot verification authenticates reviewed provenance values'
 }
 
+test_snapshot_rejects_coordinated_content_corruption() {
+  local temp source manifest source_backup manifest_backup out rc
+  temp=$(physical_temp_root kcode-skills-content-corruption)
+  source="$ROOT/skill-snapshot/vendor/no-mistakes/no-mistakes/SKILL.md"
+  manifest="$ROOT/skill-snapshot/checksums.sha256"
+  source_backup="$temp/SKILL.md"
+  manifest_backup="$temp/checksums.sha256"
+  cp "$source" "$source_backup"
+  cp "$manifest" "$manifest_backup"
+  cleanup_content_corruption() {
+    cp "$source_backup" "$source"
+    cp "$manifest_backup" "$manifest"
+  }
+  trap 'cleanup_content_corruption; fm_test_cleanup' EXIT
+  python3 - "$ROOT" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+relative = "skill-snapshot/vendor/no-mistakes/no-mistakes/SKILL.md"
+source = root / relative
+manifest = root / "skill-snapshot/checksums.sha256"
+source.write_bytes(source.read_bytes() + b"\ncoordinated corruption\n")
+digest = hashlib.sha256(source.read_bytes()).hexdigest()
+lines = manifest.read_text(encoding="utf-8").splitlines()
+manifest.write_text("\n".join(digest + "  " + relative if line.endswith("  " + relative) else line for line in lines) + "\n", encoding="utf-8")
+PY
+  rc=0
+  out=$("$SKILLS" verify 2>&1) || rc=$?
+  cleanup_content_corruption
+  trap 'fm_test_cleanup || true' EXIT
+  [ "$rc" -ne 0 ] || fail 'snapshot verification accepted coordinated source and checksum corruption'
+  assert_contains "$out" 'reviewed provenance digest mismatch: checksums.sha256' \
+    'coordinated source corruption did not invalidate the reviewed checksum manifest'
+  pass 'snapshot verification authenticates the checksum manifest'
+}
+
 test_restore_refuses_different_existing_skill() {
   local temp home out rc
   temp=$(physical_temp_root kcode-skills-collision)
@@ -838,6 +876,7 @@ test_clean_home_restore
 test_restore_stages_on_destination_filesystem
 test_restore_preserves_and_verifies_executable_modes
 test_snapshot_rejects_corrupt_provenance
+test_snapshot_rejects_coordinated_content_corruption
 test_restore_refuses_different_existing_skill
 test_restore_preflights_late_marker_conflict
 test_restore_rolls_back_late_write_failure

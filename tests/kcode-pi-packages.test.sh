@@ -105,11 +105,10 @@ if research["use"][2] != {
     "effort": "max",
 }:
     raise SystemExit("research triad third profile is not Fable 5 through Pi")
-serialized = json.dumps(dispatch).lower()
-if any(term in serialized for term in ("askclaude", "claude-opus", "standalone claude")):
-    raise SystemExit("dispatch config contains a forbidden alternate Claude route")
+if "claude-bridge/claude-opus-4-8" not in research["why"]:
+    raise SystemExit("research triad omits its Pi bridge Opus fallback")
 PY
-  pass 'crew, secondmate, and research triad routes stay on their exact Pi profiles'
+  pass 'crew, secondmate, and research triad provider routes all stay inside Pi'
 }
 
 test_readme_explains_install_and_auth_boundaries() {
@@ -119,10 +118,8 @@ test_readme_explains_install_and_auth_boundaries() {
     'README omits the pinned Claude bridge package'
   assert_contains "$(cat "$ROOT/README.md")" 'pi /login xai-auth' \
     'README omits the explicit xAI login step'
-  assert_contains "$(cat "$ROOT/README.md")" 'requires the operator to provision its authentication separately' \
-    'README omits the Claude bridge authentication boundary'
-  assert_contains "$(cat "$ROOT/README.md")" 'never launches a standalone Claude agent' \
-    'README does not prohibit standalone Claude routing'
+  assert_contains "$(cat "$ROOT/README.md")" 'separately authenticated Claude Code' \
+    'README omits the Claude Code authentication boundary'
   assert_contains "$(cat "$ROOT/README.md")" 'fm-primary-pi-watch.ts' \
     'README does not distinguish the Firstmate Pi extensions'
   assert_contains "$(cat "$ROOT/README.md")" 'fm-primary-turnend-guard.ts' \

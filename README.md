@@ -132,7 +132,7 @@ Restore writes normal directories and never creates absolute links back to the m
 [`.pi/settings.json`](.pi/settings.json) declares two reviewed Pi packages at exact versions:
 
 - `npm:pi-xai-oauth@1.3.3` registers the `xai-auth` provider, Grok models, and xAI tools.
-- `npm:pi-claude-bridge@0.6.2` registers the `claude-bridge` provider and model routes; k-code does not configure or invoke its optional tool route.
+- `npm:pi-claude-bridge@0.6.2` registers the `claude-bridge` provider and models plus the `AskClaude` tool.
 
 After a clean clone is trusted, Pi installs missing project packages into its ignored `.pi/npm/` store.
 Each package identity appears exactly once in project settings; Pi's project scope wins over an unpinned global entry, so the same provider is not registered twice.
@@ -149,8 +149,8 @@ Authenticate xAI explicitly inside Pi:
 pi /login xai-auth
 ```
 
-`pi-claude-bridge` requires the operator to provision its authentication separately.
-k-code selects only the declared `claude-bridge/claude-fable-5` Pi model route and never launches a standalone Claude agent.
+`pi-claude-bridge` uses the separately authenticated Claude Code installation on the operator's machine.
+Run `claude` and complete Claude Code login (use `/login` when needed) before selecting a `claude-bridge/*` model or calling `AskClaude`.
 
 ## How synchronization works
 
@@ -242,7 +242,7 @@ The core safety rules are unchanged from upstream Firstmate: Firstmate delegates
 
 [`config/crew-dispatch.json`](config/crew-dispatch.json) stores natural-language dispatch rules that select a harness, model, and effort profile for each task shape.
 
-This fleet keeps every launch on Pi: [`config/crew-harness`](config/crew-harness) pins the general harness to `pi`, [`config/secondmate-harness`](config/secondmate-harness) routes secondmates through `claude-bridge/claude-fable-5` at max effort, and the research triad's third voice uses that same exact Pi bridge route without an alternate model.
+This fleet keeps every launch on Pi: [`config/crew-harness`](config/crew-harness) pins the general harness to `pi`, [`config/secondmate-harness`](config/secondmate-harness) routes secondmates through `claude-bridge/claude-fable-5` at max effort, and the research triad's third voice uses the same Pi bridge route with a Pi `claude-bridge/claude-opus-4-8` fallback rather than standalone Claude.
 The JSON file is the authoritative policy, while [the configuration guide](docs/configuration.md) owns its schema and behavior.
 
 ### Durable memory
@@ -312,7 +312,7 @@ Firstmate owns lifecycle operations; direct `bin/fm-*` invocation, including `bi
 If this clone should reproduce user-level community skills, restore them into the intended home explicitly with `bin/kcode-skills.sh restore`.
 
 Once the repository is trusted, Pi auto-installs the two exact packages from `.pi/settings.json`; run `pi list`, then authenticate xAI with `pi /login xai-auth`.
-The Claude bridge is authenticated separately by the operator and never receives credentials from this repository.
+The Claude bridge uses a separately authenticated Claude Code installation and never receives credentials from this repository.
 
 Harness-managed Codex and Grok skills still require the exact harness versions recorded in the manifest.
 

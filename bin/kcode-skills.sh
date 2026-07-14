@@ -107,6 +107,7 @@ reviewed_metadata = {
     "overlays.tsv": "424615d85fb45f72eb299f357d0a1a9983e652d4329ab40645eb3ee4d08b95f2",
     "harness-managed.tsv": "6e2ef73c55151c30a02050cadedc920ae003b35e5687ec699f28365bc11bac59",
     "restore.tsv": "0fe563712816612f50b5f1379d583d06143e4adad1e48fd5ec3a65e8f0356afa",
+    "checksums.sha256": "fccbdd273f6852caeb622e10a0b84767e6942fa8f213b9cd01637b7f2c7e6f0a",
     "modes.tsv": "c30273bff80c19f27dbd9d5dae8021589faf5104b00881f893e3be559b56e395",
 }
 for name, expected in reviewed_metadata.items():

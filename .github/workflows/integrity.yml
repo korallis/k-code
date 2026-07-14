@@ -26,6 +26,7 @@ jobs:
         run: |
           set -euo pipefail
           tests/kcode-integrity.test.sh
+          tests/fm-bootstrap.test.sh
           tests/kcode-validation-isolation.test.sh
           tests/kcode-skills.test.sh
           tests/kcode-pi-packages.test.sh
