@@ -248,6 +248,42 @@ print(os.path.realpath(sys.argv[1]))
 PY
 }
 
+reject_symlink_components() {
+  local home=$1 path=$2
+  python3 - "$home" "$path" <<'PY'
+import os
+import sys
+
+home, path = map(os.path.abspath, sys.argv[1:])
+relative = os.path.relpath(path, home)
+current = home
+for component in (() if relative == "." else relative.split(os.path.sep)):
+    current = os.path.join(current, component)
+    if os.path.lexists(current) and os.path.islink(current):
+        print(current)
+        raise SystemExit(1)
+PY
+}
+
+assert_restore_path() {
+  local home=$1 path=$2 escaped link
+  escaped=$(python3 - "$home" "$path" <<'PY'
+import os
+import sys
+
+home, path = map(os.path.abspath, sys.argv[1:])
+try:
+    inside = os.path.commonpath((home, path)) == home
+except ValueError:
+    inside = False
+print("no" if inside else "yes")
+PY
+)
+  [ "$escaped" = no ] || fail "restore destination escapes requested home: $path"
+  link=$(reject_symlink_components "$home" "$path") \
+    || fail "restore path contains symlinked component: $link"
+}
+
 preflight_parent() {
   local path=$1 parent
   parent=$(dirname "$path")
@@ -256,32 +292,17 @@ preflight_parent() {
     parent=$(dirname "$parent")
   done
   [ -d "$parent" ] || fail "restore parent is not a directory: $parent"
+  [ ! -L "$parent" ] || fail "restore parent is a symlink: $parent"
 }
 
 preflight_skill() {
-  local source=$1 destination=$2 temporary
+  local home=$1 source=$2 destination=$3
+  assert_restore_path "$home" "$destination"
   if [ -e "$destination" ] || [ -L "$destination" ]; then
     diff -qr "$source" "$destination" >/dev/null 2>&1 \
       || fail "refusing to overwrite different installed skill: $destination"
   fi
-  temporary="${destination}.kcode-tmp.$$"
-  [ ! -e "$temporary" ] && [ ! -L "$temporary" ] \
-    || fail "temporary restore path already exists: $temporary"
   preflight_parent "$destination"
-}
-
-install_skill() {
-  local source=$1 destination=$2 temporary
-  if [ -e "$destination" ] || [ -L "$destination" ]; then
-    diff -qr "$source" "$destination" >/dev/null 2>&1 \
-      || fail "refusing to overwrite different installed skill: $destination"
-    return 0
-  fi
-
-  mkdir -p "$(dirname "$destination")"
-  temporary="${destination}.kcode-tmp.$$"
-  cp -R "$source" "$temporary"
-  mv "$temporary" "$destination"
 }
 
 threejs_marker_content() {
@@ -291,61 +312,129 @@ threejs_marker_content() {
 }
 
 preflight_threejs_marker() {
-  local home=$1 target=$2 directory marker temporary expected
+  local home=$1 target=$2 directory marker expected
   directory=$(target_dir "$home" "$target")
   marker="$directory/.threejs-game-skills-managed"
-  temporary="${marker}.kcode-tmp.$$"
   expected=$(threejs_marker_content "$target")
   [ -n "$expected" ] || return 0
+  assert_restore_path "$home" "$marker"
   if [ -e "$marker" ] || [ -L "$marker" ]; then
     cmp -s "$marker" <(printf '%s\n' "$expected") \
       || fail "refusing to overwrite different manager marker: $marker"
   fi
-  [ ! -e "$temporary" ] && [ ! -L "$temporary" ] \
-    || fail "temporary restore path already exists: $temporary"
   preflight_parent "$marker"
 }
 
-write_threejs_marker() {
-  local home=$1 target=$2 directory marker temporary expected
-  directory=$(target_dir "$home" "$target")
-  marker="$directory/.threejs-game-skills-managed"
-  expected=$(threejs_marker_content "$target")
-  [ -n "$expected" ] || return 0
-  if [ -e "$marker" ] || [ -L "$marker" ]; then
-    cmp -s "$marker" <(printf '%s\n' "$expected") \
-      || fail "refusing to overwrite different manager marker: $marker"
-    return 0
+create_parent_dirs() {
+  local path=$1 log=$2 parent stack='' directory
+  parent=$(dirname "$path")
+  while [ ! -d "$parent" ]; do
+    [ ! -e "$parent" ] && [ ! -L "$parent" ] \
+      || return 1
+    stack="$parent"$'\n'"$stack"
+    parent=$(dirname "$parent")
+  done
+  while IFS= read -r directory; do
+    [ -n "$directory" ] || continue
+    printf '%s\n' "$directory" >> "$log"
+    mkdir "$directory"
+  done <<< "$stack"
+}
+
+rollback_restore() {
+  local transaction=$1 created_paths=$2 created_dirs=$3 path
+  set +e
+  if [ -f "$created_paths" ]; then
+    while IFS= read -r path; do
+      [ -n "$path" ] && rm -rf -- "$path"
+    done < <(awk '{line[NR]=$0} END {for (i=NR; i>0; i--) print line[i]}' "$created_paths")
   fi
-  mkdir -p "$directory"
-  temporary="${marker}.kcode-tmp.$$"
-  printf '%s\n' "$expected" > "$temporary"
-  mv "$temporary" "$marker"
+  if [ -f "$created_dirs" ]; then
+    while IFS= read -r path; do
+      [ -n "$path" ] && rmdir -- "$path" 2>/dev/null
+    done < <(awk '{line[NR]=$0} END {for (i=NR; i>0; i--) print line[i]}' "$created_dirs")
+  fi
+  rm -rf -- "$transaction"
 }
 
 restore_home() {
-  local home=$1 source target name directory count=0
+  local home=$1 requested_home source target name directory destination expected stage
+  local count=0 transaction transaction_parent plan created_paths created_dirs transaction_active=0
   [ -n "$home" ] || fail 'restore requires a non-empty --home path'
-  home=$(absolute_path "$home")
+  requested_home=$(python3 - "$home" <<'PY'
+import os
+import sys
+
+print(os.path.abspath(sys.argv[1]))
+PY
+)
+  [ ! -L "$requested_home" ] || fail "restore home must not be a symlink: $requested_home"
+  home=$(absolute_path "$requested_home")
+  case "$home" in
+    *$'\t'*|*$'\n'*) fail 'restore home must not contain tabs or newlines' ;;
+  esac
   verify_snapshot >/dev/null
+  reject_symlink_components "$home" "$home" >/dev/null \
+    || fail "restore home contains a symlinked component: $home"
   preflight_parent "$home"
 
   while IFS=$'\t' read -r source target name; do
     directory=$(target_dir "$home" "$target")
-    preflight_skill "$ROOT/$source" "$directory/$name"
+    preflight_skill "$home" "$ROOT/$source" "$directory/$name"
     count=$((count + 1))
   done < <(manifest_rows)
   preflight_threejs_marker "$home" claude
   preflight_threejs_marker "$home" codex
 
-  mkdir -p "$home"
+  transaction_parent=$(dirname "$home")
+  while [ ! -d "$transaction_parent" ]; do
+    transaction_parent=$(dirname "$transaction_parent")
+  done
+  transaction=$(mktemp -d "$transaction_parent/.kcode-restore.XXXXXX")
+  plan="$transaction/plan.tsv"
+  created_paths="$transaction/created-paths"
+  created_dirs="$transaction/created-dirs"
+  : > "$plan"
+  : > "$created_paths"
+  : > "$created_dirs"
+  transaction_active=1
+  trap 'if [ "$transaction_active" -eq 1 ]; then rollback_restore "$transaction" "$created_paths" "$created_dirs"; fi' EXIT
+
+  count=0
   while IFS=$'\t' read -r source target name; do
+    count=$((count + 1))
     directory=$(target_dir "$home" "$target")
-    install_skill "$ROOT/$source" "$directory/$name"
+    destination="$directory/$name"
+    stage="$transaction/skill-$count"
+    cp -R "$ROOT/$source" "$stage"
+    if [ ! -e "$destination" ] && [ ! -L "$destination" ]; then
+      printf '%s\t%s\n' "$stage" "$destination" >> "$plan"
+    fi
   done < <(manifest_rows)
 
-  write_threejs_marker "$home" claude
-  write_threejs_marker "$home" codex
+  for target in claude codex; do
+    expected=$(threejs_marker_content "$target")
+    [ -n "$expected" ] || continue
+    directory=$(target_dir "$home" "$target")
+    destination="$directory/.threejs-game-skills-managed"
+    stage="$transaction/marker-$target"
+    printf '%s\n' "$expected" > "$stage"
+    if [ ! -e "$destination" ] && [ ! -L "$destination" ]; then
+      printf '%s\t%s\n' "$stage" "$destination" >> "$plan"
+    fi
+  done
+
+  while IFS=$'\t' read -r stage destination; do
+    [ ! -e "$destination" ] && [ ! -L "$destination" ] \
+      || fail "restore destination changed after preflight: $destination"
+    create_parent_dirs "$destination" "$created_dirs"
+    printf '%s\n' "$destination" >> "$created_paths"
+    mv "$stage" "$destination"
+  done < "$plan"
+
+  transaction_active=0
+  trap - EXIT
+  rm -rf -- "$transaction"
   printf 'kcode-skills: restored %s placements under %s.\n' "$count" "$home"
   printf 'kcode-skills: harness-managed resources remain pinned in skill-snapshot/harness-managed.tsv.\n'
 }
@@ -365,8 +454,9 @@ verify_home() {
 
   for target in claude codex; do
     directory=$(target_dir "$home" "$target")
-    [ -f "$directory/.threejs-game-skills-managed" ] \
-      || fail "missing Three.js manager marker in $directory"
+    expected=$(threejs_marker_content "$target")
+    cmp -s "$directory/.threejs-game-skills-managed" <(printf '%s\n' "$expected") \
+      || fail "Three.js manager marker differs or is missing in $directory"
   done
   printf 'kcode-skills: verified %s restored placements under %s.\n' "$count" "$home"
 }

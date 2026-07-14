@@ -97,6 +97,68 @@ test_restore_preflights_late_marker_conflict() {
   pass 'restore preflights late conflicts before changing the target home'
 }
 
+test_restore_rolls_back_late_write_failure() {
+  local temp home fakebin before after out rc
+  temp=$(fm_test_tmproot kcode-skills-write-failure)
+  home="$temp/home"
+  fakebin="$temp/fakebin"
+  mkdir -p "$home" "$fakebin"
+  printf 'preserve me\n' > "$home/existing.txt"
+  cat > "$fakebin/mv" <<'EOF_MV'
+#!/usr/bin/env bash
+case "${*: -1}" in
+  */.claude/skills/workflow) exit 73 ;;
+esac
+exec /bin/mv "$@"
+EOF_MV
+  chmod +x "$fakebin/mv"
+  before=$(find "$home" -mindepth 1 -print -exec shasum -a 256 {} \; 2>/dev/null | LC_ALL=C sort)
+
+  rc=0
+  out=$(PATH="$fakebin:$PATH" "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore ignored a late promotion failure'
+  after=$(find "$home" -mindepth 1 -print -exec shasum -a 256 {} \; 2>/dev/null | LC_ALL=C sort)
+  [ "$after" = "$before" ] || fail "late promotion failure left a partial restore: $out"
+  [ -z "$(find "$temp" -maxdepth 1 -name '.kcode-restore.*' -print -quit)" ] \
+    || fail 'late promotion failure left transaction staging behind'
+  pass 'late promotion failure rolls back every restored path'
+}
+
+test_restore_rejects_symlinked_ancestor() {
+  local temp home outside out rc
+  temp=$(fm_test_tmproot kcode-skills-symlink-escape)
+  home="$temp/home"
+  outside="$temp/outside"
+  mkdir -p "$home" "$outside"
+  ln -s "$outside" "$home/.claude"
+
+  rc=0
+  out=$($SKILLS restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore accepted a symlinked harness root'
+  assert_contains "$out" 'restore path contains symlinked component' \
+    'symlinked-ancestor refusal did not identify the unsafe path'
+  [ -z "$(find "$outside" -mindepth 1 -print -quit)" ] \
+    || fail 'restore wrote through a symlinked ancestor outside its home'
+  assert_absent "$home/.agents" 'symlink refusal installed generic skills before failing'
+  pass 'restore rejects ancestor symlinks without escaping its home'
+}
+
+test_verify_home_rejects_stale_marker() {
+  local temp home marker out rc
+  temp=$(fm_test_tmproot kcode-skills-stale-marker)
+  home="$temp/home"
+  $SKILLS restore --home "$home" >/dev/null
+  marker="$home/.codex/skills/.threejs-game-skills-managed"
+  printf 'stale manager state\n' > "$marker"
+
+  rc=0
+  out=$($SKILLS verify-home --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'verify-home accepted a stale manager marker'
+  assert_contains "$out" 'Three.js manager marker differs or is missing' \
+    'stale manager marker failure was not identified'
+  pass 'verify-home compares manager marker contents byte-for-byte'
+}
+
 test_manifest_covers_every_captured_source_once() {
   local tracked_count vendor_count source_count skill_doc_count restore_count
   tracked_count=$(find "$ROOT/.agents/skills" "$ROOT/skills" -mindepth 2 -maxdepth 2 \
@@ -162,5 +224,8 @@ test_snapshot_verifies
 test_clean_home_restore
 test_restore_refuses_different_existing_skill
 test_restore_preflights_late_marker_conflict
+test_restore_rolls_back_late_write_failure
+test_restore_rejects_symlinked_ancestor
+test_verify_home_rejects_stale_marker
 test_manifest_covers_every_captured_source_once
 test_live_inventory_detects_unclassified_skill
