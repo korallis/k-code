@@ -260,6 +260,36 @@ EOF_HOOK
   pass 'snapshot copy requires every checksummed source path exactly once'
 }
 
+test_restore_authenticates_control_bytes_before_verification() {
+  local temp home hook backup out rc
+  temp=$(physical_temp_root kcode-skills-control-baseline)
+  home="$temp/home"
+  hook="$temp/change-control-before-verify"
+  backup="$temp/restore.tsv"
+  cp "$ROOT/skill-snapshot/restore.tsv" "$backup"
+  cat > "$hook" <<'EOF_HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '\n' >> "$1"
+EOF_HOOK
+  chmod +x "$hook"
+  cleanup_control_baseline_fixture() {
+    cp "$backup" "$ROOT/skill-snapshot/restore.tsv"
+  }
+  trap 'cleanup_control_baseline_fixture; fm_test_cleanup' EXIT
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_AFTER_CONTROL_DIGEST_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  cleanup_control_baseline_fixture
+  trap 'fm_test_cleanup || true' EXIT
+  [ "$rc" -ne 0 ] || fail 'restore trusted control bytes changed before verification'
+  assert_contains "$out" 'restore manifest changed during verification' \
+    'pre-verification control change did not invalidate the authenticated baseline'
+  assert_absent "$home" 'control baseline failure created the restore home'
+  pass 'restore authenticates control bytes before structural verification'
+}
+
 test_restore_authenticates_open_control_manifest() {
   local temp home hook backup out rc
   temp=$(physical_temp_root kcode-skills-control-manifest)
@@ -288,6 +318,33 @@ EOF_HOOK
   assert_contains "$out" 'checksum manifest bytes changed after verification' \
     'control-manifest change did not fail authenticated descriptor validation'
   pass 'restore authenticates the exact control-manifest bytes it consumes'
+}
+
+test_restore_preserves_unowned_staging_entries() {
+  local temp home hook out rc foreign
+  temp=$(physical_temp_root kcode-skills-staging-concurrent-entry)
+  home="$temp/home"
+  hook="$temp/add-unowned-staging-entry"
+  mkdir -p "$home"
+  cat > "$hook" <<'EOF_HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'foreign concurrent staging data\n' > "$1/foreign.txt"
+EOF_HOOK
+  chmod +x "$hook"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_BEFORE_STAGING_CLEANUP_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore accepted an unowned concurrent staging entry'
+  assert_contains "$out" 'staging contains unowned concurrent entries' \
+    'unowned staging entry did not produce a safe cleanup failure'
+  assert_absent "$home/.agents" 'unowned staging entry failure left promoted generic skills'
+  assert_absent "$home/.claude" 'unowned staging entry failure left promoted Claude skills'
+  foreign=$(find "$temp" -name foreign.txt -print -quit)
+  [ -n "$foreign" ] && [ "$(cat "$foreign")" = 'foreign concurrent staging data' ] \
+    || fail "staging cleanup removed or changed concurrent data: $out"
+  pass 'staging cleanup preserves unowned concurrent entries and rolls back'
 }
 
 test_restore_rolls_back_on_staging_cleanup_failure() {
@@ -646,7 +703,9 @@ test_restore_staging_parent_swap_cannot_redirect_io
 test_restore_keeps_descriptor_owned_staging_on_name_swap
 test_restore_uses_open_verified_snapshot_sources
 test_restore_rejects_source_file_omission
+test_restore_authenticates_control_bytes_before_verification
 test_restore_authenticates_open_control_manifest
+test_restore_preserves_unowned_staging_entries
 test_restore_rolls_back_on_staging_cleanup_failure
 test_restore_revalidates_promotion_ancestors
 test_restore_preserves_concurrent_destination

@@ -422,6 +422,11 @@ def capture_tree_at(parent_fd, name):
 
 
 expected_hashes = {}
+staging_owned = {}
+
+
+def record_staging_entry(relative, value):
+    staging_owned[relative] = (identity(value), value.st_mode)
 
 
 def open_directory_at(root_directory_fd, components):
@@ -437,7 +442,9 @@ def open_directory_at(root_directory_fd, components):
         raise
 
 
-def copy_snapshot_directory(source_fd, parent_fd, name, relative, encountered=None):
+def copy_snapshot_directory(
+    source_fd, parent_fd, name, relative, staged_relative, encountered=None
+):
     is_root = encountered is None
     if encountered is None:
         encountered = set()
@@ -446,17 +453,29 @@ def copy_snapshot_directory(source_fd, parent_fd, name, relative, encountered=No
         raise OSError(errno.ENOTDIR, "snapshot source is not a directory", relative)
     os.mkdir(name, mode=stat.S_IMODE(source_value.st_mode), dir_fd=parent_fd)
     destination_fd = os.open(name, flags, dir_fd=parent_fd)
+    destination_value = os.fstat(destination_fd)
+    named_value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if identity(destination_value) != identity(named_value):
+        os.close(destination_fd)
+        raise OSError(errno.ESTALE, "staging directory identity changed", staged_relative)
+    record_staging_entry(staged_relative, destination_value)
     try:
         for child in sorted(os.listdir(source_fd)):
             value = os.stat(child, dir_fd=source_fd, follow_symlinks=False)
             child_relative = f"{relative}/{child}"
+            child_staged_relative = staged_relative + (child,)
             if stat.S_ISDIR(value.st_mode):
                 child_source_fd = os.open(child, flags, dir_fd=source_fd)
                 try:
                     if identity(os.fstat(child_source_fd)) != identity(value):
                         raise OSError(errno.ESTALE, "snapshot directory identity changed", child_relative)
                     copy_snapshot_directory(
-                        child_source_fd, destination_fd, child, child_relative, encountered
+                        child_source_fd,
+                        destination_fd,
+                        child,
+                        child_relative,
+                        child_staged_relative,
+                        encountered,
                     )
                     if identity(os.fstat(child_source_fd)) != identity(value):
                         raise OSError(errno.ESTALE, "snapshot directory changed during copy", child_relative)
@@ -475,6 +494,7 @@ def copy_snapshot_directory(source_fd, parent_fd, name, relative, encountered=No
                 stat.S_IMODE(value.st_mode),
                 dir_fd=destination_fd,
             )
+            record_staging_entry(child_staged_relative, os.fstat(destination_file_fd))
             digest = hashlib.sha256()
             try:
                 if identity(os.fstat(child_source_fd)) != identity(value):
@@ -516,6 +536,7 @@ def copy_snapshot_directory(source_fd, parent_fd, name, relative, encountered=No
 
 def write_entry(parent_fd, name, content):
     fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent_fd)
+    record_staging_entry((name,), os.fstat(fd))
     try:
         data = content.encode()
         while data:
@@ -528,37 +549,46 @@ def write_entry(parent_fd, name, content):
 def remove_staging(parent_fd, staging_fd, staging_name, expected):
     if identity(os.fstat(staging_fd)) != expected:
         os.close(staging_fd)
-        for candidate in os.listdir(parent_fd):
-            value = os.stat(candidate, dir_fd=parent_fd, follow_symlinks=False)
-            if identity(value) != expected:
-                continue
-            owned_fd = os.open(candidate, flags, dir_fd=parent_fd)
+        raise OSError(errno.ESTALE, "owned staging directory identity changed", staging_name)
+
+    provenance = {
+        components: (expected_identity, mode)
+        for components, (expected_identity, mode) in staging_owned.items()
+    }
+    for components, (expected_identity, mode) in sorted(
+        provenance.items(), key=lambda item: (len(item[0]), item[0]), reverse=True
+    ):
+        try:
+            owner_fd = open_owned_parent(staging_fd, components[:-1], provenance)
+        except (FileNotFoundError, OSError):
+            continue
+        try:
+            name = components[-1]
             try:
-                if identity(os.fstat(owned_fd)) != expected or os.listdir(owned_fd):
-                    raise OSError(errno.ESTALE, "owned staging directory changed", candidate)
-            finally:
-                os.close(owned_fd)
-            os.rmdir(candidate, dir_fd=parent_fd)
-            return
-        return
-
-    def empty(directory_fd):
-        for name in os.listdir(directory_fd):
-            value = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            if stat.S_ISDIR(value.st_mode):
-                child_fd = os.open(name, flags, dir_fd=directory_fd)
+                value = os.stat(name, dir_fd=owner_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if identity(value) != expected_identity:
+                continue
+            if stat.S_ISDIR(mode):
                 try:
-                    if identity(os.fstat(child_fd)) != identity(value):
-                        raise OSError(errno.ESTALE, "staging child identity changed", name)
-                    empty(child_fd)
-                finally:
-                    os.close(child_fd)
-                os.rmdir(name, dir_fd=directory_fd)
+                    os.rmdir(name, dir_fd=owner_fd)
+                except OSError as error:
+                    if error.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+                        raise
             else:
-                os.unlink(name, dir_fd=directory_fd)
+                os.unlink(name, dir_fd=owner_fd)
+        finally:
+            os.close(owner_fd)
 
-    empty(staging_fd)
+    unknown = sorted(os.listdir(staging_fd))
     os.close(staging_fd)
+    if unknown:
+        raise OSError(
+            errno.ENOTEMPTY,
+            f"staging contains unowned concurrent entries: {unknown!r}",
+            staging_name,
+        )
     try:
         value = os.stat(staging_name, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
@@ -570,12 +600,6 @@ def remove_staging(parent_fd, staging_fd, staging_name, expected):
         candidate_value = os.stat(candidate, dir_fd=parent_fd, follow_symlinks=False)
         if identity(candidate_value) != expected:
             continue
-        owned_fd = os.open(candidate, flags, dir_fd=parent_fd)
-        try:
-            if identity(os.fstat(owned_fd)) != expected or os.listdir(owned_fd):
-                raise OSError(errno.ESTALE, "owned staging directory changed", candidate)
-        finally:
-            os.close(owned_fd)
         os.rmdir(candidate, dir_fd=parent_fd)
         return
     raise OSError(errno.ESTALE, "owned staging directory was lost before cleanup", staging_name)
@@ -855,10 +879,23 @@ try:
         staging_parent_fd = child_fd
         existing_depth += 1
     run_hook("KCODE_RESTORE_TEST_AFTER_STAGING_PARENT_OPEN_HOOK", home, existing_depth)
-    staging_name = f".kcode-restore-{os.getpid()}-{secrets.token_hex(12)}"
+    staging_name = f".kcode-restore-{os.getpid()}-{secrets.token_hex(24)}"
     os.mkdir(staging_name, mode=0o700, dir_fd=staging_parent_fd)
+    created_value = os.stat(staging_name, dir_fd=staging_parent_fd, follow_symlinks=False)
     staging_fd = os.open(staging_name, flags, dir_fd=staging_parent_fd)
-    staging_expected = identity(os.fstat(staging_fd))
+    opened_value = os.fstat(staging_fd)
+    named_value = os.stat(staging_name, dir_fd=staging_parent_fd, follow_symlinks=False)
+    if not stat.S_ISDIR(created_value.st_mode) or not (
+        identity(created_value) == identity(opened_value) == identity(named_value)
+    ):
+        os.close(staging_fd)
+        staging_fd = None
+        raise OSError(errno.ESTALE, "staging identity changed during creation", staging_name)
+    if os.listdir(staging_fd):
+        os.close(staging_fd)
+        staging_fd = None
+        raise OSError(errno.ENOTEMPTY, "new staging directory was not empty", staging_name)
+    staging_expected = identity(opened_value)
     staging_path = os.path.join(os.path.sep, *home_parts[:existing_depth], staging_name)
     run_hook("KCODE_RESTORE_TEST_AFTER_STAGING_MKDIR_HOOK", staging_path, 0)
 
@@ -891,7 +928,9 @@ try:
                 run_hook(
                     "KCODE_RESTORE_TEST_AFTER_SOURCE_OPEN_HOOK", source, len(rows) + 1
                 )
-                copy_snapshot_directory(source_fd, staging_fd, staged_name, source)
+                copy_snapshot_directory(
+                    source_fd, staging_fd, staged_name, source, (staged_name,)
+                )
             finally:
                 os.close(source_fd)
             rows.append((staged_name, destination))
@@ -992,9 +1031,16 @@ print(os.path.abspath(sys.argv[1]))
 PY
 )
   home=$(absolute_path "$requested_home")
-  verify_snapshot >/dev/null
   manifest_digest=$(file_sha256 "$RESTORE_MANIFEST")
   checksums_digest=$(file_sha256 "$CHECKSUMS")
+  if [ -n "${KCODE_RESTORE_TEST_AFTER_CONTROL_DIGEST_HOOK:-}" ]; then
+    "$KCODE_RESTORE_TEST_AFTER_CONTROL_DIGEST_HOOK" "$RESTORE_MANIFEST" "$CHECKSUMS"
+  fi
+  verify_snapshot >/dev/null
+  [ "$(file_sha256 "$RESTORE_MANIFEST")" = "$manifest_digest" ] \
+    || fail 'restore manifest changed during verification'
+  [ "$(file_sha256 "$CHECKSUMS")" = "$checksums_digest" ] \
+    || fail 'checksum manifest changed during verification'
   preflight_parent "$home"
 
   while IFS=$'\t' read -r source target name; do
