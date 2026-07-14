@@ -39,7 +39,7 @@ PY
 }
 
 test_validation_uses_ephemeral_pi_session() {
-  local temp home project origin fakebin argv daemon_log push_log daemon_pid run_pid out i
+  local temp home project origin fakebin argv daemon_log push_log daemon_pid run_pid out
   command -v no-mistakes >/dev/null 2>&1 || fail 'no-mistakes is required for validation isolation coverage'
   out=$(NO_MISTAKES_NO_UPDATE_CHECK=1 no-mistakes --version 2>&1)
   assert_contains "$out" 'v1.36.' 'validation isolation must exercise the supported no-mistakes v1.36 resolver'
@@ -88,7 +88,7 @@ EOF_REPO_CONFIG
   daemon_pid=$!
   run_pid=
   trap 'stop_isolated_no_mistakes "${run_pid:-}" "${daemon_pid:-}"; fm_test_cleanup' EXIT
-  for i in $(seq 1 100); do
+  for _ in $(seq 1 100); do
     HOME="$home" NO_MISTAKES_NO_UPDATE_CHECK=1 no-mistakes daemon status >/dev/null 2>&1 && break
     kill -0 "$daemon_pid" 2>/dev/null || fail "isolated no-mistakes daemon exited: $(cat "$daemon_log")"
     sleep 0.05
@@ -109,7 +109,7 @@ EOF_REPO_CONFIG
     no-mistakes axi run --intent 'verify repository-scoped Pi arguments' \
       --skip rebase,test,document,lint,push,pr,ci >>"$push_log" 2>&1) &
   run_pid=$!
-  for i in $(seq 1 400); do
+  for _ in $(seq 1 400); do
     [ -s "$argv" ] && break
     kill -0 "$daemon_pid" 2>/dev/null || fail "isolated no-mistakes daemon exited: $(cat "$daemon_log")"
     if ! kill -0 "$run_pid" 2>/dev/null; then
