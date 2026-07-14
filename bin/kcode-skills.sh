@@ -378,7 +378,6 @@ system = platform.system()
 created_dirs = []
 created_paths = []
 fds = {}
-temporary_number = 0
 
 
 def identity(value):
@@ -651,32 +650,48 @@ def content_signature(parent_fd, name):
     return tuple(records)
 
 
-def make_owned_directory(parent_fd, name):
-    global temporary_number
+def create_private_directory(parent_fd, prefix):
     while True:
-        temporary_number += 1
-        temporary = f".kcode-directory-{os.getpid()}-{temporary_number}"
+        name = f".{prefix}-{secrets.token_hex(24)}"
         try:
-            os.mkdir(temporary, dir_fd=parent_fd)
+            os.mkdir(name, mode=0o700, dir_fd=parent_fd)
             break
         except FileExistsError:
             continue
     fd = None
     try:
-        fd = os.open(temporary, flags, dir_fd=parent_fd)
-        expected = identity(os.fstat(fd))
-        rename_noreplace(parent_fd, temporary, parent_fd, name)
+        fd = os.open(name, flags, dir_fd=parent_fd)
+        value = os.fstat(fd)
+        named_value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(value.st_mode) or identity(named_value) != identity(value):
+            raise OSError(errno.ESTALE, "private directory identity changed during creation", name)
+        if os.listdir(fd):
+            raise OSError(errno.ENOTEMPTY, "new private directory was not empty", name)
+        return name, fd, identity(value)
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        try:
+            os.rmdir(name, dir_fd=parent_fd)
+        except (FileNotFoundError, OSError):
+            pass
+        raise
+
+
+def make_owned_directory(parent_fd, name):
+    temporary, fd, expected = create_private_directory(staging_fd, "kcode-directory")
+    try:
+        rename_noreplace(staging_fd, temporary, parent_fd, name)
         created_dirs.append((parent_fd, name, expected))
-        run_hook("KCODE_RESTORE_TEST_AFTER_DIRECTORY_RENAME_HOOK", name, temporary_number)
+        run_hook("KCODE_RESTORE_TEST_AFTER_DIRECTORY_RENAME_HOOK", name, temporary)
         value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         if identity(value) != expected:
             raise OSError(errno.ESTALE, "created directory identity changed", name)
         return fd
     except Exception:
-        if fd is not None:
-            os.close(fd)
+        os.close(fd)
         try:
-            os.rmdir(temporary, dir_fd=parent_fd)
+            os.rmdir(temporary, dir_fd=staging_fd)
         except FileNotFoundError:
             pass
         raise
@@ -879,23 +894,9 @@ try:
         staging_parent_fd = child_fd
         existing_depth += 1
     run_hook("KCODE_RESTORE_TEST_AFTER_STAGING_PARENT_OPEN_HOOK", home, existing_depth)
-    staging_name = f".kcode-restore-{os.getpid()}-{secrets.token_hex(24)}"
-    os.mkdir(staging_name, mode=0o700, dir_fd=staging_parent_fd)
-    created_value = os.stat(staging_name, dir_fd=staging_parent_fd, follow_symlinks=False)
-    staging_fd = os.open(staging_name, flags, dir_fd=staging_parent_fd)
-    opened_value = os.fstat(staging_fd)
-    named_value = os.stat(staging_name, dir_fd=staging_parent_fd, follow_symlinks=False)
-    if not stat.S_ISDIR(created_value.st_mode) or not (
-        identity(created_value) == identity(opened_value) == identity(named_value)
-    ):
-        os.close(staging_fd)
-        staging_fd = None
-        raise OSError(errno.ESTALE, "staging identity changed during creation", staging_name)
-    if os.listdir(staging_fd):
-        os.close(staging_fd)
-        staging_fd = None
-        raise OSError(errno.ENOTEMPTY, "new staging directory was not empty", staging_name)
-    staging_expected = identity(opened_value)
+    staging_name, staging_fd, staging_expected = create_private_directory(
+        staging_parent_fd, "kcode-restore"
+    )
     staging_path = os.path.join(os.path.sep, *home_parts[:existing_depth], staging_name)
     run_hook("KCODE_RESTORE_TEST_AFTER_STAGING_MKDIR_HOOK", staging_path, 0)
 

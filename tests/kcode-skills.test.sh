@@ -183,6 +183,8 @@ EOF_HOOK
   [ "$rc" -eq 0 ] || fail "restore lost descriptor-owned staging after a name swap: $out"
   replacement=$(find "$temp" -maxdepth 1 -name '.kcode-restore-*' ! -name '*.displaced' -print -quit)
   displaced=$(find "$temp" -maxdepth 1 -name '.kcode-restore-*.displaced' -print -quit)
+  basename "${replacement%.displaced}" | grep -Eq '^\.kcode-restore-[0-9a-f]{48}$' \
+    || fail 'staging directory did not use an unpredictable private name'
   [ -n "$replacement" ] && [ "$(cat "$replacement/foreign.txt")" = 'foreign staging replacement' ] \
     || fail "restore changed the foreign staging replacement: $out"
   [ -z "$displaced" ] || fail 'restore stranded the staging directory it created'
@@ -555,7 +557,7 @@ EOF_HOOK
 }
 
 test_restore_does_not_journal_replaced_directory() {
-  local temp home hook out rc
+  local temp home hook private_name out rc
   temp=$(physical_temp_root kcode-skills-replaced-directory)
   home="$temp/home"
   hook="$temp/replace-directory"
@@ -564,6 +566,7 @@ test_restore_does_not_journal_replaced_directory() {
 #!/usr/bin/env bash
 set -euo pipefail
 [ "\$1" = .agents ] || exit 0
+printf '%s\n' "\$2" > "$temp/private-name"
 mv "$home/.agents" "$home/.agents.displaced"
 rm -rf "$home/.agents.displaced"
 mkdir "$home/.agents"
@@ -575,8 +578,12 @@ EOF_HOOK
   out=$(KCODE_RESTORE_TEST_AFTER_DIRECTORY_RENAME_HOOK="$hook" \
     "$SKILLS" restore --home "$home" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail 'restore accepted a parent directory replaced during creation'
+  private_name=$(cat "$temp/private-name")
+  printf '%s\n' "$private_name" | grep -Eq '^\.kcode-directory-[0-9a-f]{48}$' \
+    || fail 'parent-directory temporary did not use an unpredictable private name'
   [ "$(cat "$home/.agents/foreign.txt")" = 'foreign directory' ] \
     || fail "rollback removed or changed a foreign parent directory: $out"
+  [ ! -e "$home/$private_name" ] || fail 'restore stranded its private parent-directory temporary'
   pass 'directory ownership is captured before publication'
 }
 
