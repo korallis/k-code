@@ -7,13 +7,14 @@ set -euo pipefail
 
 build_fixture() {
   local repo=$1
-  mkdir -p "$repo/bin" "$repo/private"
+  mkdir -p "$repo/bin" "$repo/config" "$repo/private"
   cp "$ROOT/bin/kcode-integrity.sh" "$repo/bin/kcode-integrity.sh"
+  cp "$ROOT/config/kcode-data-policy.tsv" "$repo/config/kcode-data-policy.tsv"
   chmod +x "$repo/bin/kcode-integrity.sh"
   printf 'private/\n' > "$repo/.gitignore"
   printf 'ordinary tracked text\n' > "$repo/tracked.txt"
   git -C "$repo" init -q
-  git -C "$repo" add .gitignore bin/kcode-integrity.sh tracked.txt
+  git -C "$repo" add .gitignore bin/kcode-integrity.sh config/kcode-data-policy.tsv tracked.txt
 }
 
 secret_value() {
@@ -68,17 +69,20 @@ test_scan_rejects_generated_data_classes_and_keeps_safe_memory() {
   temp=$(fm_test_tmproot kcode-integrity-data-policy)
   repo="$temp/repo"
   build_fixture "$repo"
-  mkdir -p "$repo/data/random-task/screenshots" "$repo/data/another-task"
+  mkdir -p "$repo/data/random-task/screenshot" "$repo/data/another-task/preview"
   printf 'safe durable task memory\n' > "$repo/data/random-task/report.md"
-  printf 'generated image\n' > "$repo/data/random-task/screenshots/frame.png"
+  printf 'generated image\n' > "$repo/data/random-task/screenshot/frame.PNG"
+  printf 'generated preview\n' > "$repo/data/another-task/preview/index.html"
   printf 'archived history\n' > "$repo/data/another-task/history.bundle"
   git -C "$repo" add -f data
 
   rc=0
   out=$("$repo/bin/kcode-integrity.sh" --content-scan-only 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail 'integrity accepted generated data artifacts'
-  assert_contains "$out" 'data/random-task/screenshots/frame.png' \
+  assert_contains "$out" 'data/random-task/screenshot/frame.PNG' \
     'integrity did not reject a generated screenshot by content class'
+  assert_contains "$out" 'data/another-task/preview/index.html' \
+    'integrity did not reject a singular generated preview directory'
   assert_contains "$out" 'data/another-task/history.bundle' \
     'integrity did not reject an archived Git bundle by content class'
   assert_not_contains "$out" 'data/random-task/report.md' \

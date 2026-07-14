@@ -336,21 +336,28 @@ test_restore_preflights_late_marker_conflict() {
 }
 
 test_restore_rolls_back_late_write_failure() {
-  local temp home before after out rc
+  local temp home before after out rc unexpected
   temp=$(physical_temp_root kcode-skills-write-failure)
   home="$temp/home"
   mkdir -p "$home"
   printf 'preserve me\n' > "$home/existing.txt"
-  before=$(find "$home" -mindepth 1 -print -exec shasum -a 256 {} \; 2>/dev/null | LC_ALL=C sort)
+  before=$(find "$home" -mindepth 1 -maxdepth 1 -type f -print -exec shasum -a 256 {} \; 2>/dev/null | LC_ALL=C sort)
 
   rc=0
   out=$(KCODE_RESTORE_TEST_FAIL_AFTER=60 "$SKILLS" restore --home "$home" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail 'restore ignored a late promotion failure'
-  after=$(find "$home" -mindepth 1 -print -exec shasum -a 256 {} \; 2>/dev/null | LC_ALL=C sort)
-  [ "$after" = "$before" ] || fail "late promotion failure left a partial restore: $out"
+  after=$(find "$home" -mindepth 1 -maxdepth 1 -type f -print -exec shasum -a 256 {} \; 2>/dev/null | LC_ALL=C sort)
+  [ "$after" = "$before" ] || fail "late promotion failure changed pre-existing home files: $out"
+  unexpected=$(find "$home" -type f ! -path "$home/existing.txt" \
+    ! -path '*/kcode-restore-preserved-*/*' -print -quit)
+  [ -z "$unexpected" ] || fail "late promotion failure left an installed payload: $unexpected"
+  [ -n "$(find "$home" -type d -name 'kcode-restore-preserved-*' -print -quit)" ] \
+    || fail 'late promotion failure did not preserve rollback-owned files visibly'
+  assert_contains "$out" 'rollback preserved transaction-owned files at' \
+    'late promotion failure omitted recovery paths'
   [ -z "$(find "$home" -maxdepth 1 -name '.kcode-restore-*' -print -quit)" ] \
     || fail 'late promotion failure left transaction staging behind'
-  pass 'late promotion failure rolls back every restored path'
+  pass 'late promotion failure removes installs and exposes preserved rollback files'
 }
 
 write_symlink_swap_hook() {
@@ -665,8 +672,8 @@ EOF_HOOK
   [ "$rc" -ne 0 ] || fail 'restore accepted an unowned concurrent staging entry'
   assert_contains "$out" 'staging contains unowned concurrent entries' \
     'unowned staging entry did not produce a safe cleanup failure'
-  assert_absent "$home/.agents" 'unowned staging entry failure left promoted generic skills'
-  assert_absent "$home/.claude" 'unowned staging entry failure left promoted Claude skills'
+  assert_absent "$home/.agents/skills/no-mistakes" 'unowned staging entry failure left promoted generic skills'
+  assert_absent "$home/.claude/skills/workflow" 'unowned staging entry failure left promoted Claude skills'
   foreign=$(find "$temp" -name foreign.txt -print -quit)
   [ -n "$foreign" ] && [ "$(cat "$foreign")" = 'foreign concurrent staging data' ] \
     || fail "staging cleanup removed or changed concurrent data: $out"
@@ -693,8 +700,8 @@ EOF_HOOK
   out=$(KCODE_RESTORE_TEST_BEFORE_STAGING_CLEANUP_HOOK="$hook" \
     "$SKILLS" restore --home "$home" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail 'restore accepted loss of its descriptor-owned staging directory'
-  assert_absent "$home/.agents" 'staging cleanup failure left promoted generic skills'
-  assert_absent "$home/.claude" 'staging cleanup failure left promoted Claude skills'
+  assert_absent "$home/.agents/skills/no-mistakes" 'staging cleanup failure left promoted generic skills'
+  assert_absent "$home/.claude/skills/workflow" 'staging cleanup failure left promoted Claude skills'
   [ "$(find "$temp" -name foreign.txt -exec cat {} \;)" = 'foreign replacement' ] \
     || fail "staging cleanup rollback changed the foreign replacement: $out"
   pass 'staging cleanup failures roll back promoted paths and preserve replacements'
@@ -715,8 +722,8 @@ test_restore_revalidates_promotion_ancestors() {
   [ -L "$home/.claude" ] || fail 'restore rollback removed the foreign symlink'
   [ -z "$(find "$outside" -mindepth 1 -print -quit)" ] \
     || fail "restore wrote through the post-preflight symlink: $out"
-  assert_absent "$home/.agents" 'promotion symlink failure left earlier restored skills'
-  assert_absent "$home/.grok" 'promotion symlink failure left later restored skills'
+  assert_absent "$home/.agents/skills/no-mistakes" 'promotion symlink failure left earlier restored skills'
+  assert_absent "$home/.grok/skills/bootstrap-ios" 'promotion symlink failure left later restored skills'
   pass 'promotion revalidates ancestors without following late symlinks'
 }
 
@@ -740,7 +747,7 @@ EOF_HOOK
   [ "$rc" -ne 0 ] || fail 'restore replaced a destination created after preflight'
   [ "$(cat "$destination/SKILL.md")" = 'foreign concurrent object' ] \
     || fail "rollback removed or changed a concurrent destination: $out"
-  assert_absent "$home/.agents" 'concurrent destination failure left earlier restored skills'
+  assert_absent "$home/.agents/skills/no-mistakes" 'concurrent destination failure left earlier restored skills'
   pass 'rollback preserves paths the transaction did not create'
 }
 
@@ -770,27 +777,40 @@ EOF_HOOK
 }
 
 test_restore_rollback_preserves_concurrent_file_edit() {
-  local temp home hook destination out rc
+  local temp home edit_hook preserve_hook destination preserved out rc
   temp=$(physical_temp_root kcode-skills-concurrent-edit)
   home="$temp/home"
-  hook="$temp/edit-promoted-file"
+  edit_hook="$temp/edit-promoted-file"
+  preserve_hook="$temp/edit-preserved-file"
   destination="$home/.agents/skills/no-mistakes/SKILL.md"
   mkdir -p "$home"
-  cat > "$hook" <<'EOF_HOOK'
+  cat > "$edit_hook" <<'EOF_HOOK'
 #!/usr/bin/env bash
 set -euo pipefail
 [ "$2" = 1 ] || exit 0
 printf 'concurrent in-place edit\n' > "$1/SKILL.md"
 EOF_HOOK
-  chmod +x "$hook"
+  cat > "$preserve_hook" <<'EOF_HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$(basename "$1")" = SKILL.md ] || exit 0
+printf 'concurrent edit after quarantine\n' > "$1"
+EOF_HOOK
+  chmod +x "$edit_hook" "$preserve_hook"
 
   rc=0
-  out=$(KCODE_RESTORE_TEST_AFTER_PROMOTE_HOOK="$hook" KCODE_RESTORE_TEST_FAIL_AFTER=1 \
-    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  out=$(KCODE_RESTORE_TEST_AFTER_PROMOTE_HOOK="$edit_hook" \
+    KCODE_RESTORE_TEST_AFTER_PRESERVE_HOOK="$preserve_hook" \
+    KCODE_RESTORE_TEST_FAIL_AFTER=1 "$SKILLS" restore --home "$home" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail 'restore ignored failure after a concurrent file edit'
-  [ "$(cat "$destination")" = 'concurrent in-place edit' ] \
-    || fail "rollback removed or changed a concurrent file edit: $out"
-  pass 'rollback preserves promoted files changed by another writer'
+  assert_absent "$destination" 'rollback left a partial promoted file at its destination'
+  preserved=$(find "$home/.agents/skills" -path '*/kcode-restore-preserved-*/SKILL.md' -print -quit)
+  [ -n "$preserved" ] || fail "rollback did not expose a recovery path: $out"
+  [ "$(cat "$preserved")" = 'concurrent edit after quarantine' ] \
+    || fail "rollback removed or changed a concurrent post-quarantine edit: $out"
+  assert_contains "$out" "$(dirname "$(dirname "$preserved")")" \
+    'rollback diagnostics omitted the preserved recovery path'
+  pass 'rollback atomically preserves files across concurrent writer edits'
 }
 
 test_restore_journals_before_post_rename_failure() {

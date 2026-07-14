@@ -107,12 +107,30 @@ for line in modes_bytes.decode("utf-8").splitlines():
     if mode not in {"100644", "100755"} or relative in expected:
         raise SystemExit(f"kcode-skills: invalid captured mode row: {relative}")
     expected[relative] = 0o755 if mode == "100755" else 0o644
+def normalize_mode(path, value, mode, directory=False):
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if directory and hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    fd = os.open(path, flags)
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (value.st_dev, value.st_ino):
+            raise SystemExit(f"kcode-skills: captured source identity changed: {path.relative_to(root)}")
+        if directory != stat.S_ISDIR(opened.st_mode):
+            raise SystemExit(f"kcode-skills: captured source type changed: {path.relative_to(root)}")
+        os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
+
+
 for relative in (".agents/skills", "skills", "skill-snapshot/vendor"):
     base = root / relative
     base_value = base.lstat()
     if not stat.S_ISDIR(base_value.st_mode):
         raise SystemExit(f"kcode-skills: captured source root is not a directory: {relative}")
-    os.chmod(base, 0o755, follow_symlinks=False)
+    normalize_mode(base, base_value, 0o755, directory=True)
     for current, directories, _ in os.walk(base, followlinks=False):
         for name in directories:
             path = Path(current) / name
@@ -121,13 +139,13 @@ for relative in (".agents/skills", "skills", "skill-snapshot/vendor"):
                 raise SystemExit(f"kcode-skills: captured source contains a symlink: {path.relative_to(root)}")
             if not stat.S_ISDIR(value.st_mode):
                 raise SystemExit(f"kcode-skills: captured source entry is not a directory: {path.relative_to(root)}")
-            os.chmod(path, 0o755, follow_symlinks=False)
+            normalize_mode(path, value, 0o755, directory=True)
 for relative, mode in expected.items():
     path = root / relative
     value = path.lstat()
     if not stat.S_ISREG(value.st_mode):
         raise SystemExit(f"kcode-skills: captured source is not a regular file: {relative}")
-    os.chmod(path, mode, follow_symlinks=False)
+    normalize_mode(path, value, mode)
 PY
 }
 
@@ -646,6 +664,8 @@ libc = ctypes.CDLL(None, use_errno=True)
 system = platform.system()
 created_dirs = []
 created_paths = []
+preserved_paths = []
+preservation_roots = {}
 fds = {}
 
 
@@ -1077,7 +1097,37 @@ def restore_quarantine(parent_fd, temporary, name):
         ) from error
 
 
-def remove_owned_entry(parent_fd, name, expected, mode, digest=None):
+def create_preservation_directory(parent_fd, destination):
+    key = identity(os.fstat(parent_fd))
+    if key in preservation_roots:
+        return preservation_roots[key]
+    temporary, fd, _ = create_private_directory(parent_fd, "kcode-preserved")
+    name = f"kcode-restore-preserved-{os.getpid()}-{secrets.token_hex(12)}"
+    rename_noreplace(parent_fd, temporary, parent_fd, name)
+    path = os.path.join(os.path.dirname(destination), name)
+    preserved_paths.append(path)
+    preservation_roots[key] = (fd, path)
+    return fd, path
+
+
+def preservation_parent(root_fd, components):
+    fd = os.dup(root_fd)
+    try:
+        for component in components:
+            try:
+                os.mkdir(component, mode=0o700, dir_fd=fd)
+            except FileExistsError:
+                pass
+            child = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def remove_owned_entry(parent_fd, name, expected, mode, preservation=None, components=()):
     temporary = quarantine(parent_fd, name)
     if temporary is None:
         return
@@ -1086,34 +1136,50 @@ def remove_owned_entry(parent_fd, name, expected, mode, digest=None):
         if identity(value) != expected or value.st_mode != mode:
             restore_quarantine(parent_fd, temporary, name)
             return
-        if stat.S_ISREG(mode) and file_digest_at(parent_fd, temporary, value) != digest:
-            restore_quarantine(parent_fd, temporary, name)
+        if stat.S_ISREG(mode):
+            if preservation is None:
+                restore_quarantine(parent_fd, temporary, name)
+                return
+            recovery_fd = preservation_parent(preservation, components[:-1])
+            try:
+                rename_noreplace(parent_fd, temporary, recovery_fd, components[-1])
+                preserved = os.path.join(preserved_paths[-1], *components)
+                run_hook("KCODE_RESTORE_TEST_AFTER_PRESERVE_HOOK", preserved, len(preserved_paths))
+            finally:
+                os.close(recovery_fd)
             return
         if stat.S_ISDIR(mode):
             os.rmdir(temporary, dir_fd=parent_fd)
         else:
-            os.unlink(temporary, dir_fd=parent_fd)
+            restore_quarantine(parent_fd, temporary, name)
     except OSError:
         restore_quarantine(parent_fd, temporary, name)
 
 
-def remove_owned_path(parent_fd, name, captured):
+def remove_owned_path(parent_fd, name, captured, destination):
     provenance = {components: (expected, mode) for components, expected, mode, _ in captured}
     root_expected, root_mode = provenance[()]
-    root_digest = captured[0][3]
     temporary = quarantine(parent_fd, name)
     if temporary is None:
         return
+    preservation_fd = None
     try:
         value = os.stat(temporary, dir_fd=parent_fd, follow_symlinks=False)
         if identity(value) != root_expected or value.st_mode != root_mode:
             restore_quarantine(parent_fd, temporary, name)
             return
+        preservation_fd, _ = create_preservation_directory(parent_fd, destination)
         if not stat.S_ISDIR(root_mode):
-            if stat.S_ISREG(root_mode) and file_digest_at(parent_fd, temporary, value) != root_digest:
+            if not stat.S_ISREG(root_mode):
                 restore_quarantine(parent_fd, temporary, name)
                 return
-            os.unlink(temporary, dir_fd=parent_fd)
+            recovery_fd = preservation_parent(preservation_fd, ())
+            try:
+                rename_noreplace(parent_fd, temporary, recovery_fd, name)
+                preserved = os.path.join(preserved_paths[-1], name)
+                run_hook("KCODE_RESTORE_TEST_AFTER_PRESERVE_HOOK", preserved, len(preserved_paths))
+            finally:
+                os.close(recovery_fd)
             return
         root_fd = os.open(temporary, flags, dir_fd=parent_fd)
         try:
@@ -1125,11 +1191,18 @@ def remove_owned_path(parent_fd, name, captured):
                 key=lambda item: (len(item[0]), item[0]),
                 reverse=True,
             )
-            for components, expected, mode, digest in entries:
+            for components, expected, mode, _ in entries:
                 try:
                     owner_fd = open_owned_parent(root_fd, components[:-1], provenance)
                     try:
-                        remove_owned_entry(owner_fd, components[-1], expected, mode, digest)
+                        remove_owned_entry(
+                            owner_fd,
+                            components[-1],
+                            expected,
+                            mode,
+                            preservation_fd,
+                            (name,) + components,
+                        )
                     finally:
                         os.close(owner_fd)
                 except OSError:
@@ -1147,9 +1220,9 @@ def remove_owned_path(parent_fd, name, captured):
 
 def rollback():
     failures = []
-    for parent_fd, name, captured in reversed(created_paths):
+    for parent_fd, name, captured, destination in reversed(created_paths):
         try:
-            remove_owned_path(parent_fd, name, captured)
+            remove_owned_path(parent_fd, name, captured, destination)
         except Exception as error:
             failures.append(error)
     for parent_fd, name, expected, mode in reversed(created_dirs):
@@ -1335,7 +1408,7 @@ try:
         except FileNotFoundError:
             captured = capture_tree_at(area_fd, staged_name)
             rename_noreplace(area_fd, staged_name, parent_fd, name)
-            created_paths.append((parent_fd, name, captured))
+            created_paths.append((parent_fd, name, captured, destination))
             run_hook("KCODE_RESTORE_TEST_AFTER_RENAME_HOOK", destination, number)
             value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             if identity(value) != captured[0][1]:
@@ -1392,9 +1465,17 @@ finally:
             raise RuntimeError(
                 f"staging cleanup failed and rollback was incomplete: {details}"
             ) from cause
+    for fd, _ in preservation_roots.values():
+        os.close(fd)
     if staging_parent_fd is not None:
         os.close(staging_parent_fd)
     os.close(project_fd)
+    if preserved_paths:
+        print(
+            "kcode-skills: rollback preserved transaction-owned files at "
+            + ", ".join(preserved_paths),
+            file=sys.stderr,
+        )
     if cleanup_errors:
         raise cleanup_errors[0]
     for fd in reversed(tuple(fds.values())):

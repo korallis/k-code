@@ -11,7 +11,8 @@
 #
 # k-code-owned surfaces are not overwritten:
 #   README.md, CONTRIBUTING.md, docs/scripts.md, .gitattributes, .gitignore,
-#   .no-mistakes.yaml, .pi/settings.json, .github/workflows/, assets/kcode/,
+#   .no-mistakes.yaml, .pi/settings.json, config/kcode-data-policy.tsv,
+#   .github/workflows/, assets/kcode/,
 #   docs/assets/, skill-snapshot/, bin/kcode-*.sh, and tests/kcode-*.test.sh.
 #
 # Usage: bin/kcode-sync.sh [<message>]
@@ -26,6 +27,29 @@ KCODE_DIR="${KCODE_DIR:-$(dirname "$FM_HOME")/k-code}"
 SKILL_USER_HOME="${KCODE_SKILL_USER_HOME:-$HOME}"
 DRY_RUN="${KCODE_SYNC_DRY_RUN:-0}"
 MSG="${1:-sync: mirror firstmate operating home $(date -u +%Y-%m-%dT%H:%MZ)}"
+DATA_POLICY="$KCODE_DIR/config/kcode-data-policy.tsv"
+
+[ -f "$DATA_POLICY" ] || {
+  printf 'kcode-sync: missing data policy at %s\n' "$DATA_POLICY" >&2
+  exit 1
+}
+data_directories=()
+data_extensions=()
+while IFS=$'\t' read -r kind value; do
+  case "$kind" in
+    directory) data_directories+=("$value") ;;
+    extension) data_extensions+=("$value") ;;
+    \#*|'') ;;
+    *) printf 'kcode-sync: invalid data policy row: %s\t%s\n' "$kind" "$value" >&2; exit 1 ;;
+  esac
+done < "$DATA_POLICY"
+data_excludes=()
+for value in "${data_directories[@]}"; do
+  data_excludes+=("--exclude=data/**/$value/")
+done
+for value in "${data_extensions[@]}"; do
+  data_excludes+=("--exclude=data/**/*.$value")
+done
 
 [ -d "$KCODE_DIR/.git" ] || [ -f "$KCODE_DIR/.git" ] || {
   printf 'kcode-sync: no k-code checkout at %s (set KCODE_DIR)\n' "$KCODE_DIR" >&2
@@ -49,6 +73,7 @@ rsync -a --delete \
   --exclude='.gitignore' \
   --exclude='.no-mistakes.yaml' \
   --exclude='.pi/settings.json' \
+  --exclude='config/kcode-data-policy.tsv' \
   --exclude='README.md' \
   --exclude='CONTRIBUTING.md' \
   --exclude='docs/scripts.md' \
@@ -74,20 +99,16 @@ rsync -a --delete \
   --exclude='*credential*' \
   --exclude='config/x-mode.env' \
   --exclude='config/cmux-socket-password' \
-  --exclude='data/**/*.bundle' \
-  --exclude='data/**/preview/' \
-  --exclude='data/**/previews/' \
-  --exclude='data/**/render/' \
-  --exclude='data/**/renders/' \
-  --exclude='data/**/screenshots/' \
-  --exclude='data/**/gifs/' \
+  "${data_excludes[@]}" \
   "$FM_HOME"/ "$KCODE_DIR"/
 
 if [ -d "$KCODE_DIR/data" ]; then
-  find "$KCODE_DIR/data" -type f -name '*.bundle' -delete
-  find "$KCODE_DIR/data" -depth -type d \
-    \( -name preview -o -name previews -o -name render -o -name renders \
-       -o -name screenshots -o -name gifs \) -exec rm -rf {} +
+  for value in "${data_extensions[@]}"; do
+    find "$KCODE_DIR/data" -type f -iname "*.$value" -delete
+  done
+  for value in "${data_directories[@]}"; do
+    find "$KCODE_DIR/data" -depth -type d -name "$value" -exec rm -rf {} +
+  done
 fi
 rm -f "$KCODE_DIR/.github/WORKFLOWS-NOTE.md"
 
@@ -116,6 +137,12 @@ __pycache__/
 *.pyc
 *.log
 GI
+for value in "${data_extensions[@]}"; do
+  printf 'data/**/*.%s\n' "$value" >> "$KCODE_DIR/.gitignore"
+done
+for value in "${data_directories[@]}"; do
+  printf 'data/**/%s/\n' "$value" >> "$KCODE_DIR/.gitignore"
+done
 
 # Excluding a source path does not remove an old destination index entry.
 # Remove only index records so an ignored local product checkout remains intact.

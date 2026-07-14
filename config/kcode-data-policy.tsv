@@ -1,0 +1,15 @@
+# kind	value
+directory	preview
+directory	previews
+directory	render
+directory	renders
+directory	screenshot
+directory	screenshots
+directory	gif
+directory	gifs
+extension	bundle
+extension	gif
+extension	png
+extension	jpg
+extension	jpeg
+extension	webp

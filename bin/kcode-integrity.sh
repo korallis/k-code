@@ -11,6 +11,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 fail=0
+DATA_POLICY="$ROOT/config/kcode-data-policy.tsv"
+data_directories=()
+data_extensions=()
+[ -f "$DATA_POLICY" ] || { printf 'kcode-integrity: missing config/kcode-data-policy.tsv\n' >&2; exit 1; }
+while IFS=$'\t' read -r kind value; do
+  case "$kind" in
+    directory) data_directories+=("$value") ;;
+    extension) data_extensions+=("$value") ;;
+    \#*|'') ;;
+    *) printf 'kcode-integrity: invalid data policy row: %s\t%s\n' "$kind" "$value" >&2; exit 1 ;;
+  esac
+done < "$DATA_POLICY"
 
 scan_tracked_text_pattern() {
   local label=$1 ignore_case=$2 pattern=$3 entry metadata mode object stage path matched=0
@@ -38,10 +50,23 @@ scan_tracked_text_pattern() {
 }
 
 scan_tracked_data_policy() {
-  local path matched=0
+  local path lower value matched=0 rejected
   while IFS= read -r -d '' path; do
-    if printf '%s\n' "$path" | LC_ALL=C grep -Eiq \
-      '^data/(.*/)?((screenshots?|gifs?|previews?|renders?)(/|$)|[^/]+\.(bundle|gif|png|jpe?g|webp)$)'; then
+    lower=$(printf '%s' "$path" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+    rejected=0
+    for value in "${data_directories[@]}"; do
+      case "/$lower/" in
+        *"/$value/"*) rejected=1; break ;;
+      esac
+    done
+    if [ "$rejected" -eq 0 ]; then
+      for value in "${data_extensions[@]}"; do
+        case "$lower" in
+          *."$value") rejected=1; break ;;
+        esac
+      done
+    fi
+    if [ "$rejected" -eq 1 ]; then
       printf 'kcode-integrity: generated data artifact is tracked: %q\n' "$path" >&2
       matched=1
     fi
@@ -97,6 +122,7 @@ required=(
   .pi/settings.json
   config/crew-dispatch.json
   config/crew-harness
+  config/kcode-data-policy.tsv
   config/secondmate-harness
   bin/kcode-sync.sh
   bin/kcode-skills.sh

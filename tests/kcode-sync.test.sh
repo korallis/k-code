@@ -18,7 +18,7 @@ build_fixture() {
     "$live/.github/workflows" \
     "$live/.pi/npm" \
     "$live/config" \
-    "$live/data/ordinary-task/previews" \
+    "$live/data/ordinary-task/preview" \
     "$live/data/ordinary-task/screenshots" \
     "$live/projects/source-product" \
     "$live/state"
@@ -32,11 +32,13 @@ build_fixture() {
   printf '{"packages":["npm:unreviewed"]}\n' > "$live/.pi/settings.json"
   printf 'package cache\n' > "$live/.pi/npm/package-lock.json"
   printf '{}\n' > "$live/config/crew-dispatch.json"
+  printf 'upstream data policy\n' > "$live/config/kcode-data-policy.tsv"
   printf 'durable\n' > "$live/data/backlog.md"
   printf 'safe durable task memory\n' > "$live/data/ordinary-task/brief.md"
   printf 'archived git history\n' > "$live/data/ordinary-task/history.bundle"
-  printf 'generated preview\n' > "$live/data/ordinary-task/previews/index.html"
+  printf 'generated preview\n' > "$live/data/ordinary-task/preview/index.html"
   printf 'generated render\n' > "$live/data/ordinary-task/screenshots/frame.png"
+  printf 'generated image extension\n' > "$live/data/ordinary-task/loose.WEBP"
   printf 'source product\n' > "$live/projects/source-product/only-source.txt"
   printf 'runtime\n' > "$live/state/task.status"
   printf 'live README\n' > "$live/README.md"
@@ -65,6 +67,8 @@ build_fixture() {
   printf 'fork scripts guide\n' > "$destination/docs/scripts.md"
   printf 'fork attributes\n' > "$destination/.gitattributes"
   printf 'fork validation\n' > "$destination/.no-mistakes.yaml"
+  mkdir -p "$destination/config"
+  cp "$ROOT/config/kcode-data-policy.tsv" "$destination/config/kcode-data-policy.tsv"
   printf '{"packages":["npm:pi-xai-oauth@1.3.3","npm:pi-claude-bridge@0.6.2"]}\n' \
     > "$destination/.pi/settings.json"
   printf 'old ignore\n' > "$destination/.gitignore"
@@ -75,8 +79,9 @@ build_fixture() {
   printf 'protected sync\n' > "$destination/bin/kcode-sync.sh"
   printf 'protected test\n' > "$destination/tests/kcode-sync.test.sh"
   printf 'legacy local checkout\n' > "$destination/projects/legacy/local.txt"
-  mkdir -p "$destination/data/ordinary-task/renders"
-  printf 'stale render\n' > "$destination/data/ordinary-task/renders/frame.html"
+  mkdir -p "$destination/data/ordinary-task/render"
+  printf 'stale render\n' > "$destination/data/ordinary-task/render/frame.html"
+  printf 'stale image\n' > "$destination/data/ordinary-task/stale-image.JPEG"
   printf 'stale bundle\n' > "$destination/data/ordinary-task/stale-history.bundle"
   cat > "$destination/bin/kcode-skills.sh" <<'SH'
 #!/usr/bin/env bash
@@ -129,6 +134,8 @@ test_sync_preserves_local_products_but_removes_tracking() {
     || fail 'sync overwrote fork validation posture'
   assert_contains "$(cat "$destination/.pi/settings.json")" 'npm:pi-xai-oauth@1.3.3' \
     'sync overwrote the fork-owned Pi package declarations'
+  cmp -s "$destination/config/kcode-data-policy.tsv" "$ROOT/config/kcode-data-policy.tsv" \
+    || fail 'sync overwrote the fork-owned data policy'
   assert_absent "$destination/.pi/npm" 'sync copied the live Pi package store'
   [ "$(cat "$destination/bin/kcode-sync.sh")" = 'protected sync' ] \
     || fail 'sync overwrote its protected fork script'
@@ -144,10 +151,12 @@ test_sync_preserves_local_products_but_removes_tracking() {
   assert_absent "$destination/projects/source-product" 'sync copied a source product checkout'
   assert_present "$destination/data/ordinary-task/brief.md" 'sync dropped safe durable task memory'
   assert_absent "$destination/data/ordinary-task/history.bundle" 'sync copied an archived Git bundle'
-  assert_absent "$destination/data/ordinary-task/previews" 'sync copied generated previews'
+  assert_absent "$destination/data/ordinary-task/preview" 'sync copied a singular generated preview directory'
   assert_absent "$destination/data/ordinary-task/screenshots" 'sync copied generated renders'
+  assert_absent "$destination/data/ordinary-task/loose.WEBP" 'sync copied a generated image extension'
   assert_absent "$destination/data/ordinary-task/stale-history.bundle" 'sync retained a stale archived Git bundle'
-  assert_absent "$destination/data/ordinary-task/renders" 'sync retained stale generated renders'
+  assert_absent "$destination/data/ordinary-task/render" 'sync retained a singular generated render directory'
+  assert_absent "$destination/data/ordinary-task/stale-image.JPEG" 'sync retained a stale generated image extension'
   assert_not_contains "$(cat "$SYNC")" 'kcode-rebuild-g7' \
     'sync still special-cases a historical task id'
 
@@ -159,6 +168,15 @@ test_sync_preserves_local_products_but_removes_tracking() {
   gitlinks=$(git -C "$destination" ls-files -s | awk '$1 == "160000" {print $4}')
   [ -z "$gitlinks" ] || fail "sync left tracked gitlinks: $gitlinks"
   assert_grep 'projects/' "$destination/.gitignore" 'sync ignore contract does not exclude projects/'
+  while IFS=$'\t' read -r kind value; do
+    case "$kind" in
+      directory) expected="data/**/$value/" ;;
+      extension) expected="data/**/*.$value" ;;
+      \#*|'') continue ;;
+    esac
+    assert_grep "$expected" "$destination/.gitignore" \
+      "generated ignore contract omitted $kind $value"
+  done < "$ROOT/config/kcode-data-policy.tsv"
 
   assert_grep 'verify' "$log" 'sync did not verify the captured skill snapshot'
   assert_grep "verify-live --from-home $live --user-home $temp/user" "$log" \
