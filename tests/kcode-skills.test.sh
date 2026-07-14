@@ -32,6 +32,24 @@ managed_names() {
   ' "$MANAGED"
 }
 
+write_pi_package_inventory() {
+  local home=$1 component version package_dir
+  mkdir -p "$home/.pi/agent"
+  cat > "$home/.pi/agent/settings.json" <<'EOF_JSON'
+{"packages":["npm:@firstpick/pi-themes-bundle","npm:pi-xai-oauth","npm:pi-claude-bridge"]}
+EOF_JSON
+  while IFS=$'\t' read -r component version; do
+    package_dir="$home/.pi/agent/npm/node_modules/$component"
+    mkdir -p "$package_dir"
+    printf '{"name":"%s","version":"%s"}\n' "$component" "$version" \
+      > "$package_dir/package.json"
+  done < <(awk -F '\t' '
+    $1 == "Pi" && $2 != "@earendil-works/pi-coding-agent" && $5 ~ /^npm:/ {
+      print $2 "\t" $3
+    }
+  ' "$MANAGED")
+}
+
 physical_temp_root() {
   local parent temp
   parent=$(cd "${TMPDIR:-/tmp}" && pwd -P)
@@ -687,10 +705,21 @@ test_live_inventory_detects_unclassified_skill() {
   cat > "$home/.claude/plugins/installed_plugins.json" <<EOF_JSON
 {"version":2,"plugins":{"vercel@claude-plugins-official":[{"installPath":"$plugin_dir"}]}}
 EOF_JSON
+  write_pi_package_inventory "$home"
 
   out=$($SKILLS verify-live --from-home "$ROOT" --user-home "$home")
   assert_contains "$out" 'live roots match the complete captured inventory' \
     'classified live fixture did not verify'
+
+  printf '{"name":"pi-claude-bridge","version":"0.6.1"}\n' \
+    > "$home/.pi/agent/npm/node_modules/pi-claude-bridge/package.json"
+  rc=0
+  out=$($SKILLS verify-live --from-home "$ROOT" --user-home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'live inventory accepted a changed Pi package version'
+  assert_contains "$out" 'installed Pi package does not match captured version' \
+    'Pi package drift failure did not identify the changed package'
+  printf '{"name":"pi-claude-bridge","version":"0.6.2"}\n' \
+    > "$home/.pi/agent/npm/node_modules/pi-claude-bridge/package.json"
 
   write_dummy_skill "$home/.grok/skills" unclassified-skill
   rc=0

@@ -8,7 +8,7 @@ allow_repo_commands: true
 
 commands:
   lint: 'bin/fm-lint.sh'
-  test: 'bin/kcode-integrity.sh && tests/kcode-skills.test.sh && tests/kcode-sync.test.sh'
+  test: 'bin/kcode-integrity.sh && tests/kcode-skills.test.sh && tests/kcode-pi-packages.test.sh && tests/kcode-sync.test.sh'
 
 test:
   evidence:

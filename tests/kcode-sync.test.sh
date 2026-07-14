@@ -16,6 +16,7 @@ build_fixture() {
     "$live/.agents/skills/live-skill" \
     "$live/skills/public-skill" \
     "$live/.github/workflows" \
+    "$live/.pi/npm" \
     "$live/config" \
     "$live/data" \
     "$live/projects/source-product" \
@@ -27,6 +28,8 @@ build_fixture() {
   printf '%s\n' '---' 'name: public-skill' 'description: fixture' '---' \
     > "$live/skills/public-skill/SKILL.md"
   printf 'upstream workflow\n' > "$live/.github/workflows/live.yml"
+  printf '{"packages":["npm:unreviewed"]}\n' > "$live/.pi/settings.json"
+  printf 'package cache\n' > "$live/.pi/npm/package-lock.json"
   printf '{}\n' > "$live/config/crew-dispatch.json"
   printf 'durable\n' > "$live/data/backlog.md"
   printf 'source product\n' > "$live/projects/source-product/only-source.txt"
@@ -44,6 +47,7 @@ build_fixture() {
     "$destination/bin" \
     "$destination/tests" \
     "$destination/.github/workflows" \
+    "$destination/.pi" \
     "$destination/assets/kcode" \
     "$destination/docs/assets" \
     "$destination/skill-snapshot" \
@@ -51,6 +55,8 @@ build_fixture() {
   printf 'fork README\n' > "$destination/README.md"
   printf 'fork attributes\n' > "$destination/.gitattributes"
   printf 'fork validation\n' > "$destination/.no-mistakes.yaml"
+  printf '{"packages":["npm:pi-xai-oauth@1.3.3","npm:pi-claude-bridge@0.6.2"]}\n' \
+    > "$destination/.pi/settings.json"
   printf 'old ignore\n' > "$destination/.gitignore"
   printf 'fork integrity\n' > "$destination/.github/workflows/integrity.yml"
   printf 'fork art\n' > "$destination/assets/kcode/sentinel.txt"
@@ -63,7 +69,11 @@ build_fixture() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$KCODE_SKILL_LOG"
 SH
-  chmod +x "$destination/bin/kcode-skills.sh"
+  cat > "$destination/bin/kcode-integrity.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' integrity >> "$KCODE_SKILL_LOG"
+SH
+  chmod +x "$destination/bin/kcode-skills.sh" "$destination/bin/kcode-integrity.sh"
   git -C "$destination" add -A
   git -C "$destination" commit -qm 'fork fixture'
 
@@ -100,6 +110,9 @@ test_sync_preserves_local_products_but_removes_tracking() {
     || fail 'sync overwrote fork vendored-source attributes'
   [ "$(cat "$destination/.no-mistakes.yaml")" = 'fork validation' ] \
     || fail 'sync overwrote fork validation posture'
+  assert_contains "$(cat "$destination/.pi/settings.json")" 'npm:pi-xai-oauth@1.3.3' \
+    'sync overwrote the fork-owned Pi package declarations'
+  assert_absent "$destination/.pi/npm" 'sync copied the live Pi package store'
   [ "$(cat "$destination/bin/kcode-sync.sh")" = 'protected sync' ] \
     || fail 'sync overwrote its protected fork script'
   assert_present "$destination/.github/workflows/integrity.yml" 'sync removed fork integrity CI'
@@ -125,6 +138,7 @@ test_sync_preserves_local_products_but_removes_tracking() {
   assert_grep 'verify' "$log" 'sync did not verify the captured skill snapshot'
   assert_grep "verify-live --from-home $live --user-home $temp/user" "$log" \
     'sync did not compare every live skill root with the capture'
+  assert_grep 'integrity' "$log" 'sync did not run the complete fork integrity gate before commit'
   assert_no_grep 'submodule update' "$SYNC" 'obsolete project update behavior remains in sync'
   pass 'sync removes stale product tracking while preserving local ignored checkouts and fork surfaces'
 }

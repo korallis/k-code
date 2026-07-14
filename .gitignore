@@ -10,6 +10,11 @@ state/
 !skill-snapshot/vendor/**
 config/x-mode.env
 config/cmux-socket-password
+.pi/npm/
+.pi/git/
+.pi/claude-bridge.json
+.pi/cc-cli-logs/
+.pi/sessions/
 .DS_Store
 __pycache__/
 *.pyc

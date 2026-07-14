@@ -39,7 +39,8 @@ Those Codex and Grok resources were not copied because reinstalling the exact ha
 
 [`harness-managed.tsv`](harness-managed.tsv) records every affected skill name, the exact harness build or plugin revision, the source or install reference, the available license information, and the concrete exclusion reason.
 
-Pi 0.80.6 had no dedicated `~/.pi/agent/skills` directory, and its two installed packages expose themes or extensions rather than skills, so no Pi source is missing.
+Pi 0.80.6 had no dedicated `~/.pi/agent/skills` directory, and its three installed packages expose themes or extensions rather than skills, so no Pi skill source is missing.
+The exact `pi-xai-oauth` and `pi-claude-bridge` provider packages are restored from the project-local [`.pi/settings.json`](../.pi/settings.json) declarations; their extension source is not copied because duplicate registration conflicts, and the theme-only package remains version-recorded in [`harness-managed.tsv`](harness-managed.tsv).
 
 Codex's plugin marketplace tree and Grok's marketplace trees were caches with no installed plugins, so they were inventoried but never copied.
 
@@ -71,6 +72,7 @@ bin/kcode-skills.sh verify-home --home /path/to/clean-home
 The restore writes normal directories rather than links, and the only repository skill link is the relative `.claude/skills -> ../.agents/skills` link already tracked at the project root.
 
 Pi discovers `no-mistakes` through the restored generic `.agents/skills` root and discovers Firstmate's internal skills directly from this repository.
+After project trust, Pi also installs each provider package declared in `.pi/settings.json` exactly once; authentication remains an explicit, separate operator step.
 
 Claude receives `no-mistakes`, the shared community skills, and the captured Vercel skill source.
 

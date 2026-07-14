@@ -168,6 +168,62 @@ for plugin_id, records in sorted(data.get("plugins", {}).items()):
 PY
 }
 
+pi_managed_package_rows() {
+  awk -F '\t' '
+    $1 == "Pi" && $2 != "@earendil-works/pi-coding-agent" && $5 ~ /^npm:/ {
+      print $2 "\t" $3
+    }
+  ' "$SNAPSHOT/harness-managed.tsv" | LC_ALL=C sort
+}
+
+pi_settings_package_names() {
+  local settings=$1
+  python3 - "$settings" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+for entry in data.get("packages", []):
+    source = entry if isinstance(entry, str) else entry.get("source", "")
+    if not source.startswith("npm:"):
+        print(source)
+        continue
+    spec = source.removeprefix("npm:")
+    if spec.startswith("@"):
+        name = spec.rsplit("@", 1)[0] if spec.count("@") > 1 else spec
+    else:
+        name = spec.split("@", 1)[0]
+    print(name)
+PY
+}
+
+verify_pi_packages() {
+  local user_home=$1 settings expected actual component version package_json installed
+  settings="$user_home/.pi/agent/settings.json"
+  [ -f "$settings" ] || fail "missing Pi package inventory: $settings"
+
+  expected=$(pi_managed_package_rows | cut -f1 | LC_ALL=C sort)
+  actual=$(pi_settings_package_names "$settings" | LC_ALL=C sort)
+  assert_names 'Pi package declarations' "$actual" "$expected"
+
+  while IFS=$'\t' read -r component version; do
+    package_json="$user_home/.pi/agent/npm/node_modules/$component/package.json"
+    [ -f "$package_json" ] || fail "missing installed Pi package manifest: $package_json"
+    installed=$(python3 - "$package_json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+print(f"{data.get('name', '')}\t{data.get('version', '')}")
+PY
+)
+    [ "$installed" = "$component"$'\t'"$version" ] \
+      || fail "installed Pi package does not match captured version: $component $version"
+  done < <(pi_managed_package_rows)
+}
+
 verify_live() {
   local from_home=$1 user_home=$2 expected actual plugin_metadata plugin_dir plugin_id install_path
   [ -d "$from_home/.agents/skills" ] || fail "missing live project skill root: $from_home/.agents/skills"
@@ -212,6 +268,7 @@ verify_live() {
 
   actual=$(skill_names "$user_home/.pi/agent/skills")
   [ -z "$actual" ] || fail "unclassified Pi skills found: $actual"
+  verify_pi_packages "$user_home"
 
   verify_target_copies "$user_home" generic
   verify_target_copies "$user_home" claude

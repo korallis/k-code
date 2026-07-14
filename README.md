@@ -48,7 +48,7 @@ Product checkouts belong only in each operator's ignored local `projects/` direc
 | Routing and local configuration | Kept local and ignored by the shared distribution | Tracks the public-safe routing policy and selected operating-home configuration under `config/` |
 | Durable operating memory | Kept local and ignored by the shared distribution | Tracks curated captain preferences, learnings, backlog history, briefs, and reports under `data/` |
 | Fleet additions | General upstream feature set | Adds the validation dashboard and launcher, fleet-specific routing, operating records, and fork packaging tools |
-| Installed skills | Versions Firstmate's own internal and public skills | Captures those skills plus generic user skills and the active Pi, Claude, Codex, and Grok skill setup |
+| Installed skills and providers | Versions Firstmate's own internal and public skills | Captures those skills plus the active Pi, Claude, Codex, and Grok skill setup, with reviewed Pi provider packages pinned project-locally |
 | Product repositories | Local runtime checkouts only | Local runtime checkouts only, with `projects/` ignored and forbidden from the tracked tree |
 | CI posture | Full upstream development and pull-request gates | Focused fork-integrity checks for packaging, links, secrets, skill restore, and tracked-tree boundaries |
 | Update path | Develop and release shared Firstmate changes | Pull upstream into the live Firstmate home, review fleet adjustments, then synchronize into k-code |
@@ -73,7 +73,7 @@ The distinction matters because synchronization deliberately overwrites mirrored
 ### Owned by k-code
 
 - This README plus the fork's `.gitattributes` and `.gitignore` contracts.
-- The focused `.no-mistakes.yaml` validation profile and workflow under `.github/workflows/`.
+- The focused `.no-mistakes.yaml` validation profile, [`.pi/settings.json`](.pi/settings.json) provider pins, and workflow under `.github/workflows/`.
 - Fork artwork under `assets/kcode/` and `docs/assets/`.
 - The complete skill snapshot under [`skill-snapshot/`](skill-snapshot/).
 - [`bin/kcode-sync.sh`](bin/kcode-sync.sh), [`bin/kcode-skills.sh`](bin/kcode-skills.sh), [`bin/kcode-integrity.sh`](bin/kcode-integrity.sh), and their focused tests.
@@ -127,6 +127,31 @@ bin/kcode-skills.sh verify-home --home /path/to/clean-home
 
 Restore writes normal directories and never creates absolute links back to the machine that produced the snapshot.
 
+### Pi provider packages
+
+[`.pi/settings.json`](.pi/settings.json) declares two reviewed Pi packages at exact versions:
+
+- `npm:pi-xai-oauth@1.3.3` registers the `xai-auth` provider, Grok models, and xAI tools.
+- `npm:pi-claude-bridge@0.6.2` registers the `claude-bridge` provider and models plus the `AskClaude` tool.
+
+After a clean clone is trusted, Pi installs missing project packages into its ignored `.pi/npm/` store.
+Each package identity appears exactly once in project settings; Pi's project scope wins over an unpinned global entry, so the same provider is not registered twice.
+Confirm the result with `pi list`.
+
+The only provider-independent project extensions under `.pi/extensions/` are Firstmate's [`fm-primary-pi-watch.ts`](.pi/extensions/fm-primary-pi-watch.ts) and [`fm-primary-turnend-guard.ts`](.pi/extensions/fm-primary-turnend-guard.ts).
+The xAI and Claude provider entrypoints come from their package stores, not duplicate copies under `.pi/extensions/`.
+Do not copy `xai-oauth.ts`, `pi-claude-bridge`'s `src/index.ts`, `auth.json`, `~/.grok` credentials, Claude credentials, bridge logs, sessions, or user configuration into this repository.
+
+Package installation does not copy authentication.
+Authenticate xAI explicitly inside Pi:
+
+```text
+pi /login xai-auth
+```
+
+`pi-claude-bridge` uses the separately authenticated Claude Code installation on the operator's machine.
+Run `claude` and complete Claude Code login (use `/login` when needed) before selecting a `claude-bridge/*` model or calling `AskClaude`.
+
 ## How synchronization works
 
 Run synchronization from the live Firstmate operating home:
@@ -157,9 +182,10 @@ The script performs five guarded steps:
 
 1. It mirrors the live working tree with volatile runtime, secrets, product checkouts, and k-code-owned surfaces excluded.
 2. It rewrites the fork's ignore contract so `projects/`, runtime state, credentials, and local gate state remain untracked.
-3. It validates the captured skill snapshot against every active project, user, plugin, and harness skill root.
+3. It validates the captured skill snapshot and exact installed Pi package versions against every active project, user, plugin, and harness root.
 4. It removes stale `projects/` entries from the destination index without deleting ignored local checkouts, removes stale `.gitmodules` metadata, and rejects every remaining gitlink.
-5. It commits and pushes only when the verified tracked tree changed.
+5. It runs the complete fork integrity gate, including the project-local Pi package declarations, before delivery.
+6. It commits and pushes only when the verified tracked tree changed.
 
 A newly installed, removed, changed, or unclassified skill stops synchronization instead of producing an incomplete snapshot.
 
@@ -216,6 +242,7 @@ The core safety rules are unchanged from upstream Firstmate: Firstmate delegates
 
 [`config/crew-dispatch.json`](config/crew-dispatch.json) stores natural-language dispatch rules that select a harness, model, and effort profile for each task shape.
 
+This fleet keeps every launch on Pi: [`config/crew-harness`](config/crew-harness) pins the general harness to `pi`, [`config/secondmate-harness`](config/secondmate-harness) routes secondmates through `claude-bridge/claude-fable-5` at max effort, and the research triad's third voice uses the same Pi bridge route with a Pi `claude-bridge/claude-opus-4-8` fallback rather than standalone Claude.
 The JSON file is the authoritative policy, while [the configuration guide](docs/configuration.md) owns its schema and behavior.
 
 ### Durable memory
@@ -228,19 +255,15 @@ Runtime status, session locks, credentials, local histories, and generated super
 
 ### Validation dashboard
 
-```sh
-bin/fm-dashboard-launch.sh
-bin/fm-validation-dashboard.sh
-FM_DASH_ONCE=1 bin/fm-validation-dashboard.sh
-```
-
 The dashboard summarizes current validation state without turning the fork into a product UI.
+Firstmate owns its normal launch and lifecycle use; direct `bin/fm-dashboard-launch.sh` or `bin/fm-validation-dashboard.sh` invocation is reserved for development and troubleshooting.
 
 ### Harness integration
 
 The repository preserves the active Claude, Codex, Grok, OpenCode, and Pi hook or extension surfaces that enforce Firstmate's primary-session safety rules.
 
-The skill snapshot complements those tracked project hooks by restoring user-level skill sources separately.
+Pi's two tracked Firstmate extensions are distinct from the packaged `xai-auth` and `claude-bridge` providers declared in `.pi/settings.json`.
+The skill snapshot complements those project integrations by restoring user-level skill sources separately.
 
 ## Security boundary
 
@@ -258,6 +281,7 @@ The skill snapshot complements those tracked project hooks by restoring user-lev
 | Public-safe routing and selected home configuration | `.env`, keys, credentials, tokens, and socket passwords |
 | Curated durable fleet memory | Runtime `state/`, local histories, caches, and generated gate state |
 | Redistributable user and plugin skill source | Proprietary or version-coupled harness skill files |
+| Exact project-local Pi package declarations | Provider source copies, auth data, bridge logs, sessions, and user config |
 | Fork artwork and packaging checks | PHI and any secret-bearing configuration |
 
 The focused integrity workflow scans the tracked tree for forbidden paths and common credential shapes.
@@ -282,13 +306,13 @@ tests/kcode-skills.test.sh
 tests/kcode-sync.test.sh
 ```
 
-Start Firstmate after installing the toolchain reported by bootstrap:
-
-```sh
-bin/fm-session-start.sh
-```
+Start the configured Firstmate agent from the repository root after installing the toolchain it reports.
+Firstmate owns lifecycle operations; direct `bin/fm-*` invocation, including `bin/fm-session-start.sh`, is internal or for troubleshooting rather than the routine user workflow.
 
 If this clone should reproduce user-level community skills, restore them into the intended home explicitly with `bin/kcode-skills.sh restore`.
+
+Once the repository is trusted, Pi auto-installs the two exact packages from `.pi/settings.json`; run `pi list`, then authenticate xAI with `pi /login xai-auth`.
+The Claude bridge uses a separately authenticated Claude Code installation and never receives credentials from this repository.
 
 Harness-managed Codex and Grok skills still require the exact harness versions recorded in the manifest.
 
@@ -299,6 +323,7 @@ Harness-managed Codex and Grok skills still require the exact harness versions r
 | [`AGENTS.md`](AGENTS.md) | Complete Firstmate operating contract |
 | [`bin/`](bin/) | Mirrored fleet lifecycle tools plus protected k-code packaging commands |
 | [`.agents/skills/`](.agents/skills/) | Firstmate-loaded internal skills |
+| [`.pi/settings.json`](.pi/settings.json) | Exact project-local xAI and Claude bridge package declarations |
 | [`skills/`](skills/) | Public installer-facing Firstmate skills |
 | [`skill-snapshot/`](skill-snapshot/) | Deduplicated external skill source, provenance, checksums, and restore manifests |
 | [`config/`](config/) | Public-safe dispatch and operating-home configuration |
@@ -324,7 +349,7 @@ This split keeps upstream broadly reusable while keeping this fleet reproducible
 
 This fork intentionally keeps a focused integrity workflow instead of reintroducing upstream Firstmate's full development workflows.
 
-The workflow checks repository boundaries, secrets, required fork surfaces, Markdown links, skill snapshot and restore behavior, and the absence of product paths, `.gitmodules`, and gitlinks.
+The workflow checks repository boundaries, secrets, required fork surfaces, Markdown links, exact Pi package declarations, clean-clone package/extension boundaries, skill snapshot and restore behavior, and the absence of product paths, `.gitmodules`, and gitlinks.
 
 Shell changes still run through the repository's canonical [`bin/fm-lint.sh`](bin/fm-lint.sh) command locally and in the delivery pipeline.
 

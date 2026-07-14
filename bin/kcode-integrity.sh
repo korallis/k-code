@@ -19,12 +19,16 @@ required=(
   .tasks.toml
   .gitattributes
   .no-mistakes.yaml
+  .pi/settings.json
   config/crew-dispatch.json
+  config/crew-harness
+  config/secondmate-harness
   bin/kcode-sync.sh
   bin/kcode-skills.sh
   bin/kcode-integrity.sh
   tests/kcode-sync.test.sh
   tests/kcode-skills.test.sh
+  tests/kcode-pi-packages.test.sh
   skill-snapshot/README.md
   skill-snapshot/roots.tsv
   skill-snapshot/sources.tsv
@@ -44,8 +48,16 @@ for asset in \
   [ -f "$asset" ] || { printf 'kcode-integrity: missing %s\n' "$asset" >&2; exit 1; }
 done
 
-if git ls-files | grep -E '^(state/|projects/|\.no-mistakes/|\.lavish/)'; then
-  printf 'kcode-integrity: volatile runtime or product path is tracked\n' >&2
+if git ls-files | grep -E '^(state/|projects/|\.no-mistakes/|\.lavish/|\.pi/(npm|git|cc-cli-logs|sessions)/)'; then
+  printf 'kcode-integrity: volatile runtime, package-store, or product path is tracked\n' >&2
+  fail=1
+fi
+if git ls-files -- .pi | grep -E '(^|/)(auth\.json|claude-bridge\.json|claude-bridge\.log)$|\.pi/extensions/(xai-oauth|claude-bridge|index)\.ts$'; then
+  printf 'kcode-integrity: Pi credentials, bridge state, or duplicate provider source is tracked\n' >&2
+  fail=1
+fi
+if git ls-files | grep -E '(^|/)(pi-xai-oauth|pi-claude-bridge)/'; then
+  printf 'kcode-integrity: Pi provider package source must be installed from its pinned declaration, not vendored\n' >&2
   fail=1
 fi
 if git ls-files --error-unmatch .gitmodules >/dev/null 2>&1; then
@@ -144,7 +156,67 @@ if missing:
     sys.exit(1)
 PY
 
-python3 -c "import json; json.load(open('config/crew-dispatch.json'))"
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+with Path("config/crew-dispatch.json").open(encoding="utf-8") as handle:
+    dispatch = json.load(handle)
+with Path(".pi/settings.json").open(encoding="utf-8") as handle:
+    package_settings = json.load(handle)
+
+if Path("config/crew-harness").read_text(encoding="utf-8") != "pi\n":
+    raise SystemExit("kcode-integrity: config/crew-harness must pin Pi")
+if Path("config/secondmate-harness").read_text(encoding="utf-8") != (
+    "pi claude-bridge/claude-fable-5 max\n"
+):
+    raise SystemExit("kcode-integrity: secondmates must use Fable 5 through Pi")
+
+profiles = []
+for rule in dispatch.get("rules", []):
+    use = rule.get("use", [])
+    profiles.extend(use if isinstance(use, list) else [use])
+profiles.append(dispatch.get("default", {}))
+if not profiles or any(profile.get("harness") != "pi" for profile in profiles):
+    raise SystemExit("kcode-integrity: every dispatch profile must stay on Pi")
+research_rules = [
+    rule for rule in dispatch.get("rules", [])
+    if "research OR planning" in rule.get("when", "")
+]
+expected_third = {
+    "harness": "pi",
+    "model": "claude-bridge/claude-fable-5",
+    "effort": "max",
+}
+research_use = research_rules[0].get("use", []) if len(research_rules) == 1 else []
+if not isinstance(research_use, list) or len(research_use) != 3 or research_use[2] != expected_third:
+    raise SystemExit("kcode-integrity: research triad third profile must be Fable 5 through Pi")
+why = research_rules[0].get("why", "")
+if "claude-bridge/claude-opus-4-8" not in why or "never the standalone Claude harness" not in why:
+    raise SystemExit("kcode-integrity: research triad must document the Pi bridge Opus fallback")
+
+required = ["npm:pi-xai-oauth@1.3.3", "npm:pi-claude-bridge@0.6.2"]
+packages = package_settings.get("packages")
+if packages != required:
+    raise SystemExit(
+        "kcode-integrity: .pi/settings.json must declare each reviewed provider package exactly once"
+    )
+
+expected_pi_paths = [
+    ".pi/extensions/fm-primary-pi-watch.ts",
+    ".pi/extensions/fm-primary-turnend-guard.ts",
+    ".pi/settings.json",
+]
+import subprocess
+
+actual_pi_paths = subprocess.check_output(
+    ["git", "ls-files", "--", ".pi"], text=True
+).splitlines()
+if sorted(actual_pi_paths) != expected_pi_paths:
+    raise SystemExit(
+        "kcode-integrity: tracked .pi surface must be the two Firstmate extensions plus settings"
+    )
+PY
 bin/kcode-skills.sh verify
 
 [ "$fail" -eq 0 ] || exit "$fail"

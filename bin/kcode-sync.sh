@@ -10,8 +10,9 @@
 # Existing ignored product checkouts in the destination are never deleted.
 #
 # k-code-owned surfaces are not overwritten:
-#   README.md, .gitattributes, .gitignore, .no-mistakes.yaml, .github/workflows/, assets/kcode/,
-#   docs/assets/, skill-snapshot/, bin/kcode-*.sh, and tests/kcode-*.test.sh.
+#   README.md, .gitattributes, .gitignore, .no-mistakes.yaml, .pi/settings.json,
+#   .github/workflows/, assets/kcode/, docs/assets/, skill-snapshot/,
+#   bin/kcode-*.sh, and tests/kcode-*.test.sh.
 #
 # Usage: bin/kcode-sync.sh [<message>]
 #   Run from the live Firstmate home.
@@ -47,6 +48,7 @@ rsync -a --delete \
   --exclude='.gitattributes' \
   --exclude='.gitignore' \
   --exclude='.no-mistakes.yaml' \
+  --exclude='.pi/settings.json' \
   --exclude='README.md' \
   --exclude='.github/workflows/' \
   --exclude='assets/kcode/' \
@@ -58,6 +60,11 @@ rsync -a --delete \
   --exclude='state/' \
   --exclude='.no-mistakes/' \
   --exclude='.lavish/' \
+  --exclude='.pi/npm/' \
+  --exclude='.pi/git/' \
+  --exclude='.pi/claude-bridge.json' \
+  --exclude='.pi/cc-cli-logs/' \
+  --exclude='.pi/sessions/' \
   --exclude='node_modules/' \
   --exclude='.DS_Store' \
   --exclude='.env' \
@@ -85,6 +92,11 @@ state/
 !skill-snapshot/vendor/**
 config/x-mode.env
 config/cmux-socket-password
+.pi/npm/
+.pi/git/
+.pi/claude-bridge.json
+.pi/cc-cli-logs/
+.pi/sessions/
 .DS_Store
 __pycache__/
 *.pyc
@@ -108,6 +120,7 @@ fi
   --from-home "$FM_HOME" --user-home "$SKILL_USER_HOME"
 
 git -C "$KCODE_DIR" add -A
+"$KCODE_DIR/bin/kcode-integrity.sh"
 
 tracked_projects=$(git -C "$KCODE_DIR" ls-files -- projects)
 if [ -n "$tracked_projects" ]; then

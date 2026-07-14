@@ -22,8 +22,9 @@ jobs:
       - name: Operating-home integrity
         run: bin/kcode-integrity.sh
 
-      - name: Skill snapshot and sync regressions
+      - name: Skill snapshot, Pi package, and sync regressions
         run: |
           set -euo pipefail
           tests/kcode-skills.test.sh
+          tests/kcode-pi-packages.test.sh
           tests/kcode-sync.test.sh
