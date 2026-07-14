@@ -76,7 +76,7 @@ The distinction matters because synchronization deliberately overwrites mirrored
 - The focused `.no-mistakes.yaml` validation profile and workflow under `.github/workflows/`.
 - Fork artwork under `assets/kcode/` and `docs/assets/`.
 - The complete skill snapshot under [`skill-snapshot/`](skill-snapshot/).
-- [`bin/kcode-sync.sh`](bin/kcode-sync.sh), [`bin/kcode-skills.sh`](bin/kcode-skills.sh), and their focused tests.
+- [`bin/kcode-sync.sh`](bin/kcode-sync.sh), [`bin/kcode-skills.sh`](bin/kcode-skills.sh), [`bin/kcode-integrity.sh`](bin/kcode-integrity.sh), and their focused tests.
 
 The synchronization script excludes each owned surface explicitly so a later live-home mirror cannot erase or replace it.
 
@@ -97,6 +97,7 @@ The audit covered:
 
 Identical Claude, Codex, and Grok copies are deduplicated into one vendored source.
 
+The exact captured scope is 58 deduplicated top-level skill sources, 78 restore placements, and 458 checksummed files.
 Every redistributable source includes its origin, exact matched revision, license, complete scripts and references, and SHA-256 coverage.
 
 Version-coupled or non-redistributable harness skills are not silently dropped.
@@ -275,6 +276,7 @@ cd k-code
 Verify the packaging and skill snapshot:
 
 ```sh
+bin/kcode-integrity.sh
 bin/kcode-skills.sh verify
 tests/kcode-skills.test.sh
 tests/kcode-sync.test.sh

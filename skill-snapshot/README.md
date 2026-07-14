@@ -24,7 +24,8 @@ Every installed community source was matched byte for byte against the revision 
 
 Identical Claude, Codex, and Grok copies are stored once and expanded according to [`restore.tsv`](restore.tsv), so repeated installations do not create repeated vendored source.
 
-[`checksums.sha256`](checksums.sha256) covers the exact 458-file captured source set, including repository-local skills, vendor licenses, scripts, references, and assets.
+The exact snapshot scope is 58 deduplicated top-level skill sources, 78 restore placements, and 458 checksummed files.
+[`restore.tsv`](restore.tsv) is authoritative for placements, while [`checksums.sha256`](checksums.sha256) covers the complete captured source set, including repository-local skills, vendor licenses, scripts, references, and assets.
 
 ## Harness-managed skills
 

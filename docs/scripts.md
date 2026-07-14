@@ -6,6 +6,9 @@ If you have changed away from the firstmate home in an interactive shell, invoke
 
 | Script                   | Purpose                                                                              |
 | ------------------------ | ------------------------------------------------------------------------------------ |
+| `kcode-integrity.sh`     | Validate k-code packaging boundaries, docs, skills, JSON, secrets, and PHI            |
+| `kcode-skills.sh`        | Inventory, verify, compare, restore, and verify k-code's captured skill setup         |
+| `kcode-sync.sh`          | Mirror the live Firstmate home into k-code while preserving fork-owned surfaces       |
 | `fm-session-start.sh`    | Compose lock, bootstrap, and wake drain into the single ordered session-start digest |
 | `fm-bootstrap.sh`        | Detect toolchain and fleet problems, run the locked session-start sweeps, and install approved tools |
 | `fm-fleet-sync.sh`       | Refresh project clones with safe fast-forwards, self-heals, `STUCK:` reports, branch pruning, and bounded recovery from an orphaned `.git/packed-refs.lock` |

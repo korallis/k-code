@@ -5,8 +5,9 @@
 #
 # Rendering is FLICKER-FREE: each frame is composed into a buffer, then written in
 # one pass with a cursor-home + clear-to-end (never a full-screen clear), so rows
-# never blank out mid-refresh. State reads are CHEAP (meta + status-log tail only,
-# no per-task no-mistakes subprocess), so a frame is near-instant.
+# never blank out mid-refresh. State reads favor accuracy: each task is resolved
+# through fm-crew-state.sh, including its authoritative no-mistakes run step, before
+# the completed frame replaces the previous one.
 #
 # Usage: bin/fm-validation-dashboard.sh [<interval-seconds>]
 #   Default 4s. Ctrl-C to quit. Honors FM_HOME; self-locates otherwise.
