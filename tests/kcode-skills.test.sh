@@ -162,7 +162,7 @@ EOF_HOOK
   pass 'staging remains descriptor-bound across parent swaps and cleans safely'
 }
 
-test_restore_rejects_replaced_staging_directory() {
+test_restore_keeps_descriptor_owned_staging_on_name_swap() {
   local temp home hook out rc replacement displaced
   temp=$(physical_temp_root kcode-skills-staging-create-race)
   home="$temp/home"
@@ -180,13 +180,14 @@ EOF_HOOK
   rc=0
   out=$(KCODE_RESTORE_TEST_AFTER_STAGING_MKDIR_HOOK="$hook" \
     "$SKILLS" restore --home "$home" 2>&1) || rc=$?
-  [ "$rc" -ne 0 ] || fail 'restore accepted a staging directory replaced before descriptor binding'
+  [ "$rc" -eq 0 ] || fail "restore lost descriptor-owned staging after a name swap: $out"
   replacement=$(find "$temp" -maxdepth 1 -name '.kcode-restore-*' ! -name '*.displaced' -print -quit)
   displaced=$(find "$temp" -maxdepth 1 -name '.kcode-restore-*.displaced' -print -quit)
   [ -n "$replacement" ] && [ "$(cat "$replacement/foreign.txt")" = 'foreign staging replacement' ] \
     || fail "restore changed the foreign staging replacement: $out"
   [ -z "$displaced" ] || fail 'restore stranded the staging directory it created'
-  pass 'staging ownership is verified before use and cleans only its own directory'
+  "$SKILLS" verify-home --home "$home" >/dev/null
+  pass 'staging stays descriptor-owned after publication and cleans only its own directory'
 }
 
 test_restore_uses_open_verified_snapshot_sources() {
@@ -209,16 +210,111 @@ printf '%s\n' 'unchecked replacement' > '$original/SKILL.md'
 EOF_HOOK
   chmod +x "$hook"
 
+  cleanup_source_race_fixture() {
+    if [ -d "$displaced" ]; then
+      [ ! -e "$foreign" ] || rm -rf "$foreign"
+      [ ! -e "$original" ] || mv "$original" "$foreign"
+      mv "$displaced" "$original"
+      [ ! -e "$foreign" ] || rm -rf "$foreign"
+    fi
+  }
+  trap 'cleanup_source_race_fixture; fm_test_cleanup' EXIT
   rc=0
   out=$(KCODE_RESTORE_TEST_AFTER_SOURCE_OPEN_HOOK="$hook" \
     "$SKILLS" restore --home "$home" 2>&1) || rc=$?
-  mv "$original" "$foreign"
-  mv "$displaced" "$original"
-  rm -rf "$foreign"
+  cleanup_source_race_fixture
+  trap 'fm_test_cleanup || true' EXIT
   [ "$rc" -eq 0 ] || fail "restore failed while copying an already-open verified source: $out"
   actual=$(shasum -a 256 "$home/.claude/skills/vercel-storage/SKILL.md" | awk '{print $1}')
   [ "$actual" = "$expected" ] || fail 'restore copied unchecked content from a replaced snapshot path'
   pass 'snapshot traversal stays bound to verified no-follow source descriptors'
+}
+
+test_restore_rejects_source_file_omission() {
+  local temp home hook source removed out rc
+  temp=$(physical_temp_root kcode-skills-source-omission)
+  home="$temp/home"
+  hook="$temp/remove-source-file"
+  source='skill-snapshot/vendor/no-mistakes/no-mistakes'
+  removed="$temp/SKILL.md.removed"
+  cat > "$hook" <<EOF_HOOK
+#!/usr/bin/env bash
+set -euo pipefail
+[ "\$1" = '$source' ] || exit 0
+mv '$ROOT/$source/SKILL.md' '$removed'
+EOF_HOOK
+  chmod +x "$hook"
+  cleanup_source_omission_fixture() {
+    [ ! -e "$removed" ] || mv "$removed" "$ROOT/$source/SKILL.md"
+  }
+  trap 'cleanup_source_omission_fixture; fm_test_cleanup' EXIT
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_AFTER_SOURCE_OPEN_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  cleanup_source_omission_fixture
+  trap 'fm_test_cleanup || true' EXIT
+  [ "$rc" -ne 0 ] || fail 'restore accepted a source with an expected file omitted'
+  assert_contains "$out" 'snapshot source path set changed' \
+    'source omission did not fail exact checksum path-set validation'
+  pass 'snapshot copy requires every checksummed source path exactly once'
+}
+
+test_restore_authenticates_open_control_manifest() {
+  local temp home hook backup out rc
+  temp=$(physical_temp_root kcode-skills-control-manifest)
+  home="$temp/home"
+  hook="$temp/change-open-manifest"
+  backup="$temp/checksums.sha256"
+  cp "$ROOT/skill-snapshot/checksums.sha256" "$backup"
+  cat > "$hook" <<EOF_HOOK
+#!/usr/bin/env bash
+set -euo pipefail
+[ "\$2" = 1 ] || exit 0
+printf '\n' >> "\$1"
+EOF_HOOK
+  chmod +x "$hook"
+  cleanup_control_manifest_fixture() {
+    cp "$backup" "$ROOT/skill-snapshot/checksums.sha256"
+  }
+  trap 'cleanup_control_manifest_fixture; fm_test_cleanup' EXIT
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_AFTER_CONTROL_OPEN_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  cleanup_control_manifest_fixture
+  trap 'fm_test_cleanup || true' EXIT
+  [ "$rc" -ne 0 ] || fail 'restore accepted changed descriptor-read control bytes'
+  assert_contains "$out" 'checksum manifest bytes changed after verification' \
+    'control-manifest change did not fail authenticated descriptor validation'
+  pass 'restore authenticates the exact control-manifest bytes it consumes'
+}
+
+test_restore_rolls_back_on_staging_cleanup_failure() {
+  local temp home hook out rc
+  temp=$(physical_temp_root kcode-skills-cleanup-failure)
+  home="$temp/home"
+  hook="$temp/destroy-owned-staging"
+  mkdir -p "$home"
+  cat > "$hook" <<'EOF_HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+mv "$1" "$1.displaced"
+rm -rf "$1.displaced"
+mkdir "$1"
+printf 'foreign replacement\n' > "$1/foreign.txt"
+EOF_HOOK
+  chmod +x "$hook"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_BEFORE_STAGING_CLEANUP_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore accepted loss of its descriptor-owned staging directory'
+  assert_absent "$home/.agents" 'staging cleanup failure left promoted generic skills'
+  assert_absent "$home/.claude" 'staging cleanup failure left promoted Claude skills'
+  [ "$(find "$temp" -name foreign.txt -exec cat {} \;)" = 'foreign replacement' ] \
+    || fail "staging cleanup rollback changed the foreign replacement: $out"
+  pass 'staging cleanup failures roll back promoted paths and preserve replacements'
 }
 
 test_restore_revalidates_promotion_ancestors() {
@@ -547,8 +643,11 @@ test_restore_refuses_different_existing_skill
 test_restore_preflights_late_marker_conflict
 test_restore_rolls_back_late_write_failure
 test_restore_staging_parent_swap_cannot_redirect_io
-test_restore_rejects_replaced_staging_directory
+test_restore_keeps_descriptor_owned_staging_on_name_swap
 test_restore_uses_open_verified_snapshot_sources
+test_restore_rejects_source_file_omission
+test_restore_authenticates_open_control_manifest
+test_restore_rolls_back_on_staging_cleanup_failure
 test_restore_revalidates_promotion_ancestors
 test_restore_preserves_concurrent_destination
 test_restore_rollback_preserves_concurrent_child

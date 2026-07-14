@@ -345,9 +345,19 @@ preflight_threejs_marker() {
   preflight_parent "$marker"
 }
 
+file_sha256() {
+  local file=$1
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  else
+    sha256sum "$file" | awk '{print $1}'
+  fi
+}
+
 promote_restore_plan() {
-  local home=$1
-  python3 - "$home" "$ROOT" "$RESTORE_MANIFEST" "$CHECKSUMS" <<'PY'
+  local home=$1 manifest_digest=$2 checksums_digest=$3
+  python3 - "$home" "$ROOT" "$RESTORE_MANIFEST" "$CHECKSUMS" \
+    "$manifest_digest" "$checksums_digest" <<'PY'
 import ctypes
 import errno
 import hashlib
@@ -358,7 +368,8 @@ import stat
 import subprocess
 import sys
 
-home, root, manifest, checksums_path = map(os.path.abspath, sys.argv[1:])
+home, root, manifest, checksums_path = map(os.path.abspath, sys.argv[1:5])
+manifest_digest, checksums_digest = sys.argv[5:7]
 flags = os.O_RDONLY | os.O_DIRECTORY
 if hasattr(os, "O_NOFOLLOW"):
     flags |= os.O_NOFOLLOW
@@ -426,7 +437,10 @@ def open_directory_at(root_directory_fd, components):
         raise
 
 
-def copy_snapshot_directory(source_fd, parent_fd, name, relative):
+def copy_snapshot_directory(source_fd, parent_fd, name, relative, encountered=None):
+    is_root = encountered is None
+    if encountered is None:
+        encountered = set()
     source_value = os.fstat(source_fd)
     if not stat.S_ISDIR(source_value.st_mode):
         raise OSError(errno.ENOTDIR, "snapshot source is not a directory", relative)
@@ -442,7 +456,7 @@ def copy_snapshot_directory(source_fd, parent_fd, name, relative):
                     if identity(os.fstat(child_source_fd)) != identity(value):
                         raise OSError(errno.ESTALE, "snapshot directory identity changed", child_relative)
                     copy_snapshot_directory(
-                        child_source_fd, destination_fd, child, child_relative
+                        child_source_fd, destination_fd, child, child_relative, encountered
                     )
                     if identity(os.fstat(child_source_fd)) != identity(value):
                         raise OSError(errno.ESTALE, "snapshot directory changed during copy", child_relative)
@@ -482,10 +496,22 @@ def copy_snapshot_directory(source_fd, parent_fd, name, relative):
             expected = expected_hashes.get(child_relative)
             if expected is None or digest.hexdigest() != expected:
                 raise OSError(errno.EBADMSG, "snapshot checksum mismatch during copy", child_relative)
+            encountered.add(child_relative)
     finally:
         os.close(destination_fd)
     if identity(os.fstat(source_fd)) != identity(source_value):
         raise OSError(errno.ESTALE, "snapshot source changed during copy", relative)
+    expected_paths = {
+        path for path in expected_hashes if path.startswith(relative + "/")
+    }
+    if is_root and encountered != expected_paths:
+        missing = sorted(expected_paths - encountered)
+        unexpected = sorted(encountered - expected_paths)
+        raise OSError(
+            errno.EBADMSG,
+            f"snapshot source path set changed; missing={missing!r} unexpected={unexpected!r}",
+            relative,
+        )
 
 
 def write_entry(parent_fd, name, content):
@@ -533,10 +559,26 @@ def remove_staging(parent_fd, staging_fd, staging_name, expected):
 
     empty(staging_fd)
     os.close(staging_fd)
-    value = os.stat(staging_name, dir_fd=parent_fd, follow_symlinks=False)
-    if identity(value) != expected:
-        raise OSError(errno.ESTALE, "staging directory replaced before cleanup", staging_name)
-    os.rmdir(staging_name, dir_fd=parent_fd)
+    try:
+        value = os.stat(staging_name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        value = None
+    if value is not None and identity(value) == expected:
+        os.rmdir(staging_name, dir_fd=parent_fd)
+        return
+    for candidate in os.listdir(parent_fd):
+        candidate_value = os.stat(candidate, dir_fd=parent_fd, follow_symlinks=False)
+        if identity(candidate_value) != expected:
+            continue
+        owned_fd = os.open(candidate, flags, dir_fd=parent_fd)
+        try:
+            if identity(os.fstat(owned_fd)) != expected or os.listdir(owned_fd):
+                raise OSError(errno.ESTALE, "owned staging directory changed", candidate)
+        finally:
+            os.close(owned_fd)
+        os.rmdir(candidate, dir_fd=parent_fd)
+        return
+    raise OSError(errno.ESTALE, "owned staging directory was lost before cleanup", staging_name)
 
 
 def content_signature(parent_fd, name):
@@ -783,12 +825,18 @@ checksums_fd = os.open(
     os.path.relpath(checksums_path, root), checksum_flags, dir_fd=project_fd
 )
 checksums_value = os.fstat(checksums_fd)
-with os.fdopen(checksums_fd, encoding="utf-8") as checksum_rows:
-    for row in checksum_rows:
-        digest, relative = row.rstrip("\n").split(None, 1)
-        expected_hashes[relative] = digest
-    if identity(os.fstat(checksum_rows.fileno())) != identity(checksums_value):
+run_hook("KCODE_RESTORE_TEST_AFTER_CONTROL_OPEN_HOOK", checksums_path, 1)
+with os.fdopen(checksums_fd, "rb", closefd=True) as checksum_file:
+    checksum_bytes = checksum_file.read()
+    if identity(os.fstat(checksum_file.fileno())) != identity(checksums_value):
         raise OSError(errno.ESTALE, "checksum manifest changed while reading")
+if hashlib.sha256(checksum_bytes).hexdigest() != checksums_digest:
+    raise OSError(errno.EBADMSG, "checksum manifest bytes changed after verification")
+for row in checksum_bytes.decode("utf-8").splitlines():
+    digest, relative = row.split(None, 1)
+    if relative in expected_hashes:
+        raise OSError(errno.EBADMSG, "duplicate checksum manifest path", relative)
+    expected_hashes[relative] = digest
 validations = []
 staging_fd = None
 staging_parent_fd = None
@@ -809,23 +857,26 @@ try:
     run_hook("KCODE_RESTORE_TEST_AFTER_STAGING_PARENT_OPEN_HOOK", home, existing_depth)
     staging_name = f".kcode-restore-{os.getpid()}-{secrets.token_hex(12)}"
     os.mkdir(staging_name, mode=0o700, dir_fd=staging_parent_fd)
-    staged_value = os.stat(staging_name, dir_fd=staging_parent_fd, follow_symlinks=False)
-    staging_expected = identity(staged_value)
+    staging_fd = os.open(staging_name, flags, dir_fd=staging_parent_fd)
+    staging_expected = identity(os.fstat(staging_fd))
     staging_path = os.path.join(os.path.sep, *home_parts[:existing_depth], staging_name)
     run_hook("KCODE_RESTORE_TEST_AFTER_STAGING_MKDIR_HOOK", staging_path, 0)
-    staging_fd = os.open(staging_name, flags, dir_fd=staging_parent_fd)
-    if identity(os.fstat(staging_fd)) != staging_expected:
-        raise OSError(errno.ESTALE, "staging directory changed before descriptor binding", staging_name)
 
     rows = []
     threejs = {"claude": [], "codex": []}
     manifest_fd = os.open(os.path.relpath(manifest, root), checksum_flags, dir_fd=project_fd)
     manifest_value = os.fstat(manifest_fd)
-    with os.fdopen(manifest_fd, encoding="utf-8") as source_rows:
-        for row in source_rows:
+    run_hook("KCODE_RESTORE_TEST_AFTER_CONTROL_OPEN_HOOK", manifest, 2)
+    with os.fdopen(manifest_fd, "rb", closefd=True) as manifest_file:
+        manifest_bytes = manifest_file.read()
+        if identity(os.fstat(manifest_file.fileno())) != identity(manifest_value):
+            raise OSError(errno.ESTALE, "restore manifest changed while reading")
+    if hashlib.sha256(manifest_bytes).hexdigest() != manifest_digest:
+        raise OSError(errno.EBADMSG, "restore manifest bytes changed after verification")
+    for row in manifest_bytes.decode("utf-8").splitlines():
             if not row.strip() or row.startswith("#"):
                 continue
-            source, target, name = row.rstrip("\n").split("\t")
+            source, target, name = row.split("\t")
             target_root = {
                 "generic": ".agents/skills",
                 "claude": ".claude/skills",
@@ -846,8 +897,6 @@ try:
             rows.append((staged_name, destination))
             if target in threejs and source.startswith("skill-snapshot/vendor/threejs-game-skills/"):
                 threejs[target].append(name)
-        if identity(os.fstat(source_rows.fileno())) != identity(manifest_value):
-            raise OSError(errno.ESTALE, "restore manifest changed while reading")
     for target in ("claude", "codex"):
         if not threejs[target]:
             continue
@@ -895,6 +944,7 @@ try:
                 raise OSError(errno.ESTALE, "restore destination changed before commit", destination)
         finally:
             os.close(parent_fd)
+    run_hook("KCODE_RESTORE_TEST_BEFORE_STAGING_CLEANUP_HOOK", staging_path, len(validations))
 except Exception as original:
     failures = rollback()
     if failures:
@@ -902,11 +952,23 @@ except Exception as original:
         raise RuntimeError(f"restore failed and rollback was incomplete: {details}") from original
     raise
 finally:
+    cleanup_error = None
     if staging_fd is not None:
-        remove_staging(staging_parent_fd, staging_fd, staging_name, staging_expected)
+        try:
+            remove_staging(staging_parent_fd, staging_fd, staging_name, staging_expected)
+        except Exception as error:
+            cleanup_error = error
     if staging_parent_fd is not None:
         os.close(staging_parent_fd)
     os.close(project_fd)
+    if cleanup_error is not None:
+        failures = rollback()
+        if failures:
+            details = "; ".join(str(error) for error in failures)
+            raise RuntimeError(
+                f"staging cleanup failed and rollback was incomplete: {details}"
+            ) from cleanup_error
+        raise cleanup_error
     for fd in reversed(tuple(fds.values())):
         os.close(fd)
 PY
@@ -914,6 +976,7 @@ PY
 
 restore_home() {
   local home=$1 requested_home source target name directory link
+  local manifest_digest checksums_digest
   local count=0
   [ -n "$home" ] || fail 'restore requires a non-empty --home path'
   case "$home" in
@@ -930,6 +993,8 @@ PY
 )
   home=$(absolute_path "$requested_home")
   verify_snapshot >/dev/null
+  manifest_digest=$(file_sha256 "$RESTORE_MANIFEST")
+  checksums_digest=$(file_sha256 "$CHECKSUMS")
   preflight_parent "$home"
 
   while IFS=$'\t' read -r source target name; do
@@ -940,7 +1005,11 @@ PY
   preflight_threejs_marker "$home" claude
   preflight_threejs_marker "$home" codex
 
-  promote_restore_plan "$home"
+  [ "$(file_sha256 "$RESTORE_MANIFEST")" = "$manifest_digest" ] \
+    || fail 'restore manifest changed during preflight'
+  [ "$(file_sha256 "$CHECKSUMS")" = "$checksums_digest" ] \
+    || fail 'checksum manifest changed during preflight'
+  promote_restore_plan "$home" "$manifest_digest" "$checksums_digest"
   printf 'kcode-skills: restored %s placements under %s.\n' "$count" "$home"
   printf 'kcode-skills: harness-managed resources remain pinned in skill-snapshot/harness-managed.tsv.\n'
 }
