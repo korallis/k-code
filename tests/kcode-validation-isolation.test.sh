@@ -6,6 +6,8 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 CONFIG="$ROOT/.no-mistakes.yaml"
+MODE=${1:---static}
+[ "$MODE" = --resolver ] || [ "$MODE" = --static ] || fail 'usage: kcode-validation-isolation.test.sh [--static|--resolver]'
 
 stop_isolated_no_mistakes() {
   local run_pid=${1:-} daemon_pid=${2:-}
@@ -17,6 +19,24 @@ stop_isolated_no_mistakes() {
     kill "$daemon_pid" 2>/dev/null || true
     wait "$daemon_pid" 2>/dev/null || true
   fi
+}
+
+test_repository_profile_declares_isolation() {
+  python3 - "$CONFIG" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r"(?m)^agent_args_override:\n  pi:\n((?:    - [^\n]+\n)+)", text)
+if not match:
+    raise SystemExit("repository Pi argument override is missing")
+arguments = [line.removeprefix("    - ") for line in match.group(1).splitlines()]
+expected = ["--model", "openai-codex/gpt-5.6-sol", "--thinking", "medium", "--no-extensions"]
+if arguments != expected:
+    raise SystemExit(f"repository Pi argument override differs: {arguments!r}")
+PY
+  pass 'repository validation profile declares isolated Pi arguments'
 }
 
 test_validation_profile_disables_extensions() {
@@ -41,13 +61,6 @@ test_validation_profile_disables_extensions() {
 agent: pi
 agent_path_override:
   pi: $fakebin/pi
-agent_args_override:
-  pi:
-    - --model
-    - openai-codex/gpt-5.6-sol
-    - --thinking
-    - medium
-    - --no-extensions
 EOF_CONFIG
   cat > "$fakebin/pi" <<EOF_PI
 #!/usr/bin/env bash
@@ -150,5 +163,10 @@ PY
   pass 'non-TUI Pi validation output cannot activate project extensions'
 }
 
-test_validation_profile_disables_extensions
+test_repository_profile_declares_isolation
 test_print_mode_cannot_load_project_supervision_extensions
+if [ "$MODE" = --resolver ]; then
+  test_validation_profile_disables_extensions
+else
+  pass 'actual no-mistakes resolver integration reserved for the version-matched pipeline'
+fi
