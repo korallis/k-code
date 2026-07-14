@@ -98,7 +98,7 @@ The audit covered:
 
 Identical Claude, Codex, and Grok copies are deduplicated into one vendored source.
 
-The exact captured scope is 58 deduplicated top-level skill sources, 78 restore placements, and 458 checksummed files.
+[`skill-snapshot/README.md`](skill-snapshot/README.md) owns the exact captured counts and explains the manifest-backed scope.
 Every redistributable source includes its origin, exact matched revision, license, complete scripts and references, and SHA-256 coverage.
 
 Version-coupled or non-redistributable harness skills are not silently dropped.

@@ -9,14 +9,13 @@ We require this to reduce the maintainer's burden of reviewing and merging contr
 `no-mistakes` puts a local git proxy in front of your real remote.
 Pushing through it runs an AI-driven review/test/lint pipeline in an isolated worktree, forwards the push upstream only after every check passes, and opens a clean PR automatically.
 
-Upstream Firstmate runs a GitHub Actions check (`Require no-mistakes`) on PRs targeting `main` and rejects regular contributor PRs that lack the deterministic signature written by no-mistakes; dependency bots are exempt.
-k-code preserves the contribution gate while its fork-owned workflow runs only the focused integrity checks documented in the README.
+k-code's project-specific no-mistakes profile and focused integrity workflow validate the fork without reintroducing upstream Firstmate's full development gates.
 
 ## Workflow
 
-1. Fork the repo, then clone the parent repo or set your local `origin` back to the parent (`git@github.com:kunchenguid/firstmate.git`).
+1. Fork `korallis/k-code`, then clone the parent repository or set your local `origin` to `git@github.com:korallis/k-code.git`.
 2. Create a branch and make your changes.
-3. Initialize the gate with your fork as the push target: `no-mistakes init --fork-url git@github.com:<you>/firstmate.git` (firstmate expects **no-mistakes v1.31.2+**; without a fork, plain `no-mistakes init` still works for maintainers with push access).
+3. Initialize the gate with your fork as the push target: `no-mistakes init --fork-url git@github.com:<you>/k-code.git` (k-code expects **no-mistakes v1.31.2+**; without a fork, plain `no-mistakes init` still works for maintainers with push access).
 4. Commit your changes.
 5. Push through the gate instead of pushing to `origin`:
 
@@ -26,13 +25,15 @@ k-code preserves the contribution gate while its fork-owned workflow runs only t
 
 6. Run `no-mistakes` to attach to the pipeline, watch findings, authorize auto-fixes, and review ask-user findings as needed.
    Follow the installed no-mistakes version's SKILL.md and live `axi` help for gate mechanics.
-7. Once the pipeline passes, it pushes the branch to your fork and opens the PR against the parent repo for you.
+7. Once the pipeline passes, it pushes the branch to your fork and opens the PR against `korallis/k-code`.
 
 See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
 
+Changes that improve reusable supervisor behavior for every operator should instead target [upstream Firstmate](https://github.com/kunchenguid/firstmate) through its own contribution workflow.
+
 ## k-code fork boundary
 
-This file retains upstream Firstmate's contribution mechanics, while [`README.md`](README.md) owns k-code's fork-specific tracking and validation boundary.
+[`README.md`](README.md) owns k-code's fork-specific tracking and validation boundary.
 Unlike the upstream distribution, k-code tracks reviewed public-safe `config/` and `data/` material plus `skill-snapshot/`; it never tracks product repositories, `.gitmodules`, or gitlinks.
 Fork-owned presentation, packaging, and focused integrity CI remain separate from mirrored upstream surfaces.
 
@@ -74,17 +75,10 @@ For upstream Firstmate development, the full lint and behavior suite remains can
 Do not commit `.no-mistakes/evidence/` here even when another no-mistakes-managed target project keeps committed PR evidence.
 
 For an upstream Firstmate change, use the full toolbelt checks documented by upstream.
-For this synchronized k-code fork, run the fork-owned validation commands:
-
-```sh
-bin/fm-lint.sh
-bin/kcode-integrity.sh
-tests/kcode-skills.test.sh
-tests/kcode-sync.test.sh
-```
+For this synchronized k-code fork, `.no-mistakes.yaml` owns the exact local lint and test command chain, and [`.github/workflows/integrity.yml`](.github/workflows/integrity.yml) owns the clean-clone CI variant.
 
 Discover tests by listing `tests/*.test.sh`: each is a self-contained bash script named `<subject>.test.sh`, and its header comment describes what it covers, so run one directly to focus on a subject.
-Tests that need a real optional backend or an explicit opt-in (real herdr/zellij/cmux smoke tests, the live Pi regression) skip themselves and print the tool or environment gate needed to enable them, so the run-all loop above is always safe.
+Tests that need a real optional backend or an explicit opt-in (real herdr/zellij/cmux smoke tests, the live Pi regression) skip themselves and print the tool or environment gate needed to enable them.
 
 ## Questions
 
