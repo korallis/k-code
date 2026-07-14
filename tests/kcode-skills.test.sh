@@ -391,6 +391,38 @@ EOF_HOOK
   pass 'snapshot traversal stays bound to verified no-follow source descriptors'
 }
 
+test_restore_rejects_source_mode_change() {
+  local temp home hook source executable out rc
+  temp=$(physical_temp_root kcode-skills-source-mode)
+  home="$temp/home"
+  hook="$temp/change-source-mode"
+  source='skill-snapshot/vendor/rayfernando-skills/bootstrap-ios'
+  executable="$ROOT/$source/scripts/bootstrap-ios-skills.sh"
+  cat > "$hook" <<EOF_HOOK
+#!/usr/bin/env bash
+set -euo pipefail
+[ "\$1" = '$source' ] || exit 0
+chmod 0644 '$executable'
+EOF_HOOK
+  chmod +x "$hook"
+  cleanup_source_mode_fixture() {
+    chmod 0755 "$executable"
+  }
+  trap 'cleanup_source_mode_fixture; fm_test_cleanup' EXIT
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_AFTER_SOURCE_OPEN_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  cleanup_source_mode_fixture
+  trap 'fm_test_cleanup || true' EXIT
+  [ "$rc" -ne 0 ] || fail 'restore accepted a source mode changed after verification'
+  assert_contains "$out" 'snapshot mode mismatch during copy' \
+    'source mode race did not fail authenticated mode validation'
+  assert_absent "$home/.claude/skills/bootstrap-ios" \
+    'source mode race installed the changed skill'
+  pass 'snapshot copy binds source modes to the authenticated manifest'
+}
+
 test_restore_rejects_source_file_omission() {
   local temp home hook source removed out rc
   temp=$(physical_temp_root kcode-skills-source-omission)
@@ -746,6 +778,34 @@ EOF_HOOK
   pass 'directory ownership is captured before publication'
 }
 
+test_restore_rejects_home_ancestor_swap_before_promotion() {
+  local temp anchor displaced outside home hook out rc
+  temp=$(physical_temp_root kcode-skills-home-canonicalization-race)
+  anchor="$temp/anchor"
+  displaced="$temp/anchor-original"
+  outside="$temp/outside"
+  home="$anchor/home"
+  hook="$temp/swap-home-ancestor"
+  mkdir -p "$anchor" "$outside"
+  cat > "$hook" <<EOF_HOOK
+#!/usr/bin/env bash
+set -euo pipefail
+mv '$anchor' '$displaced'
+ln -s '$outside' '$anchor'
+EOF_HOOK
+  chmod +x "$hook"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_BEFORE_PROMOTION_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore accepted a home ancestor swapped before promotion'
+  [ -z "$(find "$outside" -mindepth 1 -print -quit)" ] \
+    || fail "home ancestor swap redirected restore outside the requested hierarchy: $out"
+  [ -z "$(find "$displaced" -name '.kcode-restore-*' -print -quit)" ] \
+    || fail 'home ancestor swap left transaction staging behind'
+  pass 'promotion walks the lexical home path without following swapped symlinks'
+}
+
 test_restore_rejects_symlinked_ancestor() {
   local temp home outside out rc
   temp=$(physical_temp_root kcode-skills-symlink-escape)
@@ -884,6 +944,7 @@ test_restore_staging_parent_swap_cannot_redirect_io
 test_restore_rejects_replaced_home_after_staging
 test_restore_keeps_descriptor_owned_staging_on_name_swap
 test_restore_uses_open_verified_snapshot_sources
+test_restore_rejects_source_mode_change
 test_restore_rejects_source_file_omission
 test_restore_authenticates_control_bytes_before_verification
 test_restore_authenticates_open_control_manifest
@@ -897,6 +958,7 @@ test_restore_revalidates_compatible_existing_entries
 test_restore_reports_quarantine_restore_collision
 test_restore_does_not_journal_replaced_promotion
 test_restore_does_not_journal_replaced_directory
+test_restore_rejects_home_ancestor_swap_before_promotion
 test_restore_rejects_symlinked_ancestor
 test_restore_rejects_symlink_above_nonexistent_home
 test_verify_home_rejects_stale_marker

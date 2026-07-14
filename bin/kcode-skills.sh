@@ -567,9 +567,9 @@ file_sha256() {
 }
 
 promote_restore_plan() {
-  local home=$1 manifest_digest=$2 checksums_digest=$3
-  python3 - "$home" "$ROOT" "$RESTORE_MANIFEST" "$CHECKSUMS" \
-    "$manifest_digest" "$checksums_digest" <<'PY'
+  local home=$1 manifest_digest=$2 checksums_digest=$3 modes_digest=$4
+  python3 - "$home" "$ROOT" "$RESTORE_MANIFEST" "$CHECKSUMS" "$SNAPSHOT/modes.tsv" \
+    "$manifest_digest" "$checksums_digest" "$modes_digest" <<'PY'
 import ctypes
 import errno
 import hashlib
@@ -580,8 +580,8 @@ import stat
 import subprocess
 import sys
 
-home, root, manifest, checksums_path = map(os.path.abspath, sys.argv[1:5])
-manifest_digest, checksums_digest = sys.argv[5:7]
+home, root, manifest, checksums_path, modes_path = map(os.path.abspath, sys.argv[1:6])
+manifest_digest, checksums_digest, modes_digest = sys.argv[6:9]
 flags = os.O_RDONLY | os.O_DIRECTORY
 if hasattr(os, "O_NOFOLLOW"):
     flags |= os.O_NOFOLLOW
@@ -633,6 +633,7 @@ def capture_tree_at(parent_fd, name):
 
 
 expected_hashes = {}
+expected_modes = {}
 staging_owned = {}
 
 
@@ -705,6 +706,9 @@ def copy_snapshot_directory(
                 continue
             if not stat.S_ISREG(value.st_mode):
                 raise OSError(errno.EPERM, "snapshot accepts only files and directories", child_relative)
+            expected_mode = expected_modes.get(child_relative)
+            if expected_mode is None or stat.S_IMODE(value.st_mode) != expected_mode:
+                raise OSError(errno.EBADMSG, "snapshot mode mismatch during copy", child_relative)
             source_flags = os.O_RDONLY
             if hasattr(os, "O_NOFOLLOW"):
                 source_flags |= os.O_NOFOLLOW
@@ -712,15 +716,18 @@ def copy_snapshot_directory(
             destination_file_fd = os.open(
                 child,
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                stat.S_IMODE(value.st_mode),
+                expected_mode,
                 dir_fd=destination_fd,
             )
-            os.fchmod(destination_file_fd, stat.S_IMODE(value.st_mode))
+            os.fchmod(destination_file_fd, expected_mode)
             record_staging_entry(child_staged_relative, os.fstat(destination_file_fd))
             digest = hashlib.sha256()
             try:
-                if identity(os.fstat(child_source_fd)) != identity(value):
+                opened_value = os.fstat(child_source_fd)
+                if identity(opened_value) != identity(value):
                     raise OSError(errno.ESTALE, "snapshot file identity changed", child_relative)
+                if stat.S_IMODE(opened_value.st_mode) != expected_mode:
+                    raise OSError(errno.EBADMSG, "snapshot mode mismatch during copy", child_relative)
                 while True:
                     block = os.read(child_source_fd, 1024 * 1024)
                     if not block:
@@ -730,8 +737,11 @@ def copy_snapshot_directory(
                     while view:
                         written = os.write(destination_file_fd, view)
                         view = view[written:]
-                if identity(os.fstat(child_source_fd)) != identity(value):
+                final_value = os.fstat(child_source_fd)
+                if identity(final_value) != identity(value):
                     raise OSError(errno.ESTALE, "snapshot file changed during copy", child_relative)
+                if stat.S_IMODE(final_value.st_mode) != expected_mode:
+                    raise OSError(errno.EBADMSG, "snapshot mode changed during copy", child_relative)
             finally:
                 os.close(destination_file_fd)
                 os.close(child_source_fd)
@@ -1099,6 +1109,26 @@ for row in checksum_bytes.decode("utf-8").splitlines():
     if relative in expected_hashes:
         raise OSError(errno.EBADMSG, "duplicate checksum manifest path", relative)
     expected_hashes[relative] = digest
+modes_fd = os.open(os.path.relpath(modes_path, root), checksum_flags, dir_fd=project_fd)
+modes_value = os.fstat(modes_fd)
+run_hook("KCODE_RESTORE_TEST_AFTER_CONTROL_OPEN_HOOK", modes_path, 3)
+with os.fdopen(modes_fd, "rb", closefd=True) as modes_file:
+    modes_bytes = modes_file.read()
+    if identity(os.fstat(modes_file.fileno())) != identity(modes_value):
+        raise OSError(errno.ESTALE, "mode manifest changed while reading")
+if hashlib.sha256(modes_bytes).hexdigest() != modes_digest:
+    raise OSError(errno.EBADMSG, "mode manifest bytes changed after verification")
+for row in modes_bytes.decode("utf-8").splitlines():
+    if not row.strip() or row.startswith("#"):
+        continue
+    mode, relative = row.split("\t", 1)
+    if relative in expected_modes:
+        raise OSError(errno.EBADMSG, "duplicate mode manifest path", relative)
+    if mode not in {"100644", "100755"}:
+        raise OSError(errno.EBADMSG, "unsupported mode manifest value", relative)
+    expected_modes[relative] = int(mode[-3:], 8)
+if set(expected_modes) != set(expected_hashes):
+    raise OSError(errno.EBADMSG, "mode manifest path set differs from checksums")
 validations = []
 staging_fd = None
 staging_parent_fd = None
@@ -1246,7 +1276,7 @@ PY
 
 restore_home() {
   local home=$1 requested_home source target name directory link
-  local manifest_digest checksums_digest
+  local manifest_digest checksums_digest modes_digest
   local count=0
   [ -n "$home" ] || fail 'restore requires a non-empty --home path'
   case "$home" in
@@ -1261,9 +1291,10 @@ import sys
 print(os.path.abspath(sys.argv[1]))
 PY
 )
-  home=$(absolute_path "$requested_home")
+  home=$requested_home
   manifest_digest=$(file_sha256 "$RESTORE_MANIFEST")
   checksums_digest=$(file_sha256 "$CHECKSUMS")
+  modes_digest=$(file_sha256 "$SNAPSHOT/modes.tsv")
   if [ -n "${KCODE_RESTORE_TEST_AFTER_CONTROL_DIGEST_HOOK:-}" ]; then
     "$KCODE_RESTORE_TEST_AFTER_CONTROL_DIGEST_HOOK" "$RESTORE_MANIFEST" "$CHECKSUMS"
   fi
@@ -1272,6 +1303,8 @@ PY
     || fail 'restore manifest changed during verification'
   [ "$(file_sha256 "$CHECKSUMS")" = "$checksums_digest" ] \
     || fail 'checksum manifest changed during verification'
+  [ "$(file_sha256 "$SNAPSHOT/modes.tsv")" = "$modes_digest" ] \
+    || fail 'mode manifest changed during verification'
   preflight_parent "$home"
 
   while IFS=$'\t' read -r source target name; do
@@ -1286,7 +1319,12 @@ PY
     || fail 'restore manifest changed during preflight'
   [ "$(file_sha256 "$CHECKSUMS")" = "$checksums_digest" ] \
     || fail 'checksum manifest changed during preflight'
-  promote_restore_plan "$home" "$manifest_digest" "$checksums_digest"
+  [ "$(file_sha256 "$SNAPSHOT/modes.tsv")" = "$modes_digest" ] \
+    || fail 'mode manifest changed during preflight'
+  if [ -n "${KCODE_RESTORE_TEST_BEFORE_PROMOTION_HOOK:-}" ]; then
+    "$KCODE_RESTORE_TEST_BEFORE_PROMOTION_HOOK" "$home"
+  fi
+  promote_restore_plan "$home" "$manifest_digest" "$checksums_digest" "$modes_digest"
   printf 'kcode-skills: restored %s placements under %s.\n' "$count" "$home"
   printf 'kcode-skills: harness-managed resources remain pinned in skill-snapshot/harness-managed.tsv.\n'
 }
