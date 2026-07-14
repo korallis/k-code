@@ -20,6 +20,7 @@ build_fixture() {
     "$live/config" \
     "$live/data/ordinary-task/preview" \
     "$live/data/ordinary-task/screenshots" \
+    "$live/data/ordinary-task/PreViews" \
     "$live/projects/source-product" \
     "$live/state"
   printf 'live tool\n' > "$live/bin/live-tool.sh"
@@ -38,6 +39,7 @@ build_fixture() {
   printf 'archived git history\n' > "$live/data/ordinary-task/history.bundle"
   printf 'generated preview\n' > "$live/data/ordinary-task/preview/index.html"
   printf 'generated render\n' > "$live/data/ordinary-task/screenshots/frame.png"
+  printf 'mixed-case generated preview\n' > "$live/data/ordinary-task/PreViews/index.html"
   printf 'generated image extension\n' > "$live/data/ordinary-task/loose.WEBP"
   printf 'source product\n' > "$live/projects/source-product/only-source.txt"
   printf 'runtime\n' > "$live/state/task.status"
@@ -79,8 +81,9 @@ build_fixture() {
   printf 'protected sync\n' > "$destination/bin/kcode-sync.sh"
   printf 'protected test\n' > "$destination/tests/kcode-sync.test.sh"
   printf 'legacy local checkout\n' > "$destination/projects/legacy/local.txt"
-  mkdir -p "$destination/data/ordinary-task/render"
+  mkdir -p "$destination/data/ordinary-task/render" "$destination/data/ordinary-task/ReNDeRs"
   printf 'stale render\n' > "$destination/data/ordinary-task/render/frame.html"
+  printf 'stale mixed-case render\n' > "$destination/data/ordinary-task/ReNDeRs/frame.html"
   printf 'stale image\n' > "$destination/data/ordinary-task/stale-image.JPEG"
   printf 'stale bundle\n' > "$destination/data/ordinary-task/stale-history.bundle"
   cat > "$destination/bin/kcode-skills.sh" <<'SH'
@@ -153,9 +156,11 @@ test_sync_preserves_local_products_but_removes_tracking() {
   assert_absent "$destination/data/ordinary-task/history.bundle" 'sync copied an archived Git bundle'
   assert_absent "$destination/data/ordinary-task/preview" 'sync copied a singular generated preview directory'
   assert_absent "$destination/data/ordinary-task/screenshots" 'sync copied generated renders'
+  assert_absent "$destination/data/ordinary-task/PreViews" 'sync copied a mixed-case generated preview directory'
   assert_absent "$destination/data/ordinary-task/loose.WEBP" 'sync copied a generated image extension'
   assert_absent "$destination/data/ordinary-task/stale-history.bundle" 'sync retained a stale archived Git bundle'
   assert_absent "$destination/data/ordinary-task/render" 'sync retained a singular generated render directory'
+  assert_absent "$destination/data/ordinary-task/ReNDeRs" 'sync retained a mixed-case generated render directory'
   assert_absent "$destination/data/ordinary-task/stale-image.JPEG" 'sync retained a stale generated image extension'
   assert_not_contains "$(cat "$SYNC")" 'kcode-rebuild-g7' \
     'sync still special-cases a historical task id'
@@ -168,15 +173,12 @@ test_sync_preserves_local_products_but_removes_tracking() {
   gitlinks=$(git -C "$destination" ls-files -s | awk '$1 == "160000" {print $4}')
   [ -z "$gitlinks" ] || fail "sync left tracked gitlinks: $gitlinks"
   assert_grep 'projects/' "$destination/.gitignore" 'sync ignore contract does not exclude projects/'
-  while IFS=$'\t' read -r kind value; do
-    case "$kind" in
-      directory) expected="data/**/$value/" ;;
-      extension) expected="data/**/*.$value" ;;
-      \#*|'') continue ;;
-    esac
-    assert_grep "$expected" "$destination/.gitignore" \
-      "generated ignore contract omitted $kind $value"
-  done < "$ROOT/config/kcode-data-policy.tsv"
+  git -C "$destination" check-ignore --no-index -q \
+    data/ordinary-task/ScReEnShOtS/frame.txt \
+    || fail 'generated ignore contract is not case-insensitive for directories'
+  git -C "$destination" check-ignore --no-index -q \
+    data/ordinary-task/image.PnG \
+    || fail 'generated ignore contract is not case-insensitive for extensions'
 
   assert_grep 'verify' "$log" 'sync did not verify the captured skill snapshot'
   assert_grep "verify-live --from-home $live --user-home $temp/user" "$log" \

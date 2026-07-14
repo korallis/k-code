@@ -33,6 +33,21 @@ DATA_POLICY="$KCODE_DIR/config/kcode-data-policy.tsv"
   printf 'kcode-sync: missing data policy at %s\n' "$DATA_POLICY" >&2
   exit 1
 }
+casefold_glob() {
+  local input=$1 output='' character upper index
+  for ((index = 0; index < ${#input}; index++)); do
+    character=${input:index:1}
+    case "$character" in
+      [a-z])
+        upper=$(printf '%s' "$character" | LC_ALL=C tr '[:lower:]' '[:upper:]')
+        output="${output}[$character$upper]"
+        ;;
+      *) output="${output}${character}" ;;
+    esac
+  done
+  printf '%s' "$output"
+}
+
 data_directories=()
 data_extensions=()
 while IFS=$'\t' read -r kind value; do
@@ -45,10 +60,10 @@ while IFS=$'\t' read -r kind value; do
 done < "$DATA_POLICY"
 data_excludes=()
 for value in "${data_directories[@]}"; do
-  data_excludes+=("--exclude=data/**/$value/")
+  data_excludes+=("--exclude=data/**/$(casefold_glob "$value")/")
 done
 for value in "${data_extensions[@]}"; do
-  data_excludes+=("--exclude=data/**/*.$value")
+  data_excludes+=("--exclude=data/**/*.$(casefold_glob "$value")")
 done
 
 [ -d "$KCODE_DIR/.git" ] || [ -f "$KCODE_DIR/.git" ] || {
@@ -107,7 +122,7 @@ if [ -d "$KCODE_DIR/data" ]; then
     find "$KCODE_DIR/data" -type f -iname "*.$value" -delete
   done
   for value in "${data_directories[@]}"; do
-    find "$KCODE_DIR/data" -depth -type d -name "$value" -exec rm -rf {} +
+    find "$KCODE_DIR/data" -depth -type d -iname "$value" -exec rm -rf {} +
   done
 fi
 rm -f "$KCODE_DIR/.github/WORKFLOWS-NOTE.md"
@@ -138,10 +153,10 @@ __pycache__/
 *.log
 GI
 for value in "${data_extensions[@]}"; do
-  printf 'data/**/*.%s\n' "$value" >> "$KCODE_DIR/.gitignore"
+  printf 'data/**/*.%s\n' "$(casefold_glob "$value")" >> "$KCODE_DIR/.gitignore"
 done
 for value in "${data_directories[@]}"; do
-  printf 'data/**/%s/\n' "$value" >> "$KCODE_DIR/.gitignore"
+  printf 'data/**/%s/\n' "$(casefold_glob "$value")" >> "$KCODE_DIR/.gitignore"
 done
 
 # Excluding a source path does not remove an old destination index entry.
