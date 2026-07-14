@@ -203,6 +203,91 @@ EOF_HOOK
   pass 'rollback removes only captured entries and preserves concurrent children'
 }
 
+test_restore_journals_before_post_rename_failure() {
+  local temp home hook out rc
+  temp=$(physical_temp_root kcode-skills-post-rename-failure)
+  home="$temp/home"
+  hook="$temp/fail-after-rename"
+  mkdir -p "$home"
+  cat > "$hook" <<'EOF_HOOK'
+#!/usr/bin/env bash
+exit 23
+EOF_HOOK
+  chmod +x "$hook"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_AFTER_RENAME_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore ignored a failure immediately after publication'
+  assert_absent "$home/.agents/skills/no-mistakes" \
+    "post-rename failure left an unjournaled promotion: $out"
+  pass 'promotion is rollback-owned before failure-prone post-rename work'
+}
+
+test_restore_revalidates_compatible_existing_entries() {
+  local temp home hook out rc
+  temp=$(physical_temp_root kcode-skills-existing-revalidation)
+  home="$temp/home"
+  hook="$temp/change-existing"
+  "$SKILLS" restore --home "$home" >/dev/null
+  cat > "$hook" <<'EOF_HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'changed after preflight\n' > "$1/.claude/skills/workflow/SKILL.md"
+printf 'stale after preflight\n' > "$1/.codex/skills/.threejs-game-skills-managed"
+EOF_HOOK
+  chmod +x "$hook"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_BEFORE_FINAL_VALIDATION_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore accepted compatible entries changed before commit'
+  assert_contains "$out" 'restore destination changed before commit' \
+    'commit-time revalidation did not identify the changed existing entry'
+  pass 'restore revalidates every compatible skill and marker before commit'
+}
+
+test_restore_reports_quarantine_restore_collision() {
+  local temp home destination hook collision_hook out rc recovery
+  temp=$(physical_temp_root kcode-skills-rollback-collision)
+  home="$temp/home"
+  destination="$home/.agents/skills/no-mistakes"
+  hook="$temp/add-concurrent-child"
+  collision_hook="$temp/recreate-destination"
+  mkdir -p "$home"
+  cat > "$hook" <<'EOF_HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$2" = 1 ] || exit 0
+printf 'preserve concurrent child\n' > "$1/concurrent.txt"
+EOF_HOOK
+  cat > "$collision_hook" <<EOF_HOOK
+#!/usr/bin/env bash
+set -euo pipefail
+[ "\$1" = no-mistakes ] || exit 0
+mkdir -p "$destination"
+printf 'foreign replacement\n' > "$destination/foreign.txt"
+EOF_HOOK
+  chmod +x "$hook" "$collision_hook"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_AFTER_PROMOTE_HOOK="$hook" \
+    KCODE_RESTORE_TEST_BEFORE_QUARANTINE_RESTORE_HOOK="$collision_hook" \
+    KCODE_RESTORE_TEST_FAIL_AFTER=1 "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore ignored an unsafe rollback name collision'
+  assert_contains "$out" 'safe rollback was impossible' \
+    'rollback collision did not fail loudly with recovery details'
+  [ "$(cat "$destination/foreign.txt")" = 'foreign replacement' ] \
+    || fail 'rollback collision changed the concurrent replacement'
+  recovery=$(find "$home/.agents/skills" -maxdepth 1 -name 'kcode-restore-recovery-*' -print -quit)
+  [ -n "$recovery" ] || fail 'rollback collision did not preserve displaced concurrent data visibly'
+  [ "$(cat "$recovery/concurrent.txt")" = 'preserve concurrent child' ] \
+    || fail 'rollback collision lost displaced concurrent data'
+  [ -z "$(find "$home" -name '.kcode-rollback-*' -print -quit)" ] \
+    || fail 'rollback collision stranded a hidden quarantine artifact'
+  pass 'rollback collisions preserve both objects and report visible recovery data'
+}
+
 test_restore_does_not_journal_replaced_promotion() {
   local temp home hook out rc
   temp=$(physical_temp_root kcode-skills-replaced-promotion)
@@ -377,6 +462,9 @@ test_restore_rolls_back_late_write_failure
 test_restore_revalidates_promotion_ancestors
 test_restore_preserves_concurrent_destination
 test_restore_rollback_preserves_concurrent_child
+test_restore_journals_before_post_rename_failure
+test_restore_revalidates_compatible_existing_entries
+test_restore_reports_quarantine_restore_collision
 test_restore_does_not_journal_replaced_promotion
 test_restore_does_not_journal_replaced_directory
 test_restore_rejects_symlinked_ancestor

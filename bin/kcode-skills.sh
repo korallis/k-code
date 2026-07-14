@@ -350,6 +350,7 @@ promote_restore_plan() {
   python3 - "$home" "$plan" <<'PY'
 import ctypes
 import errno
+import hashlib
 import os
 import platform
 import secrets
@@ -405,6 +406,52 @@ def capture_tree(path):
     return captured
 
 
+def content_signature(parent_fd, name):
+    records = []
+
+    def visit(owner_fd, entry_name, relative):
+        value = os.stat(entry_name, dir_fd=owner_fd, follow_symlinks=False)
+        kind = stat.S_IFMT(value.st_mode)
+        if stat.S_ISLNK(value.st_mode):
+            records.append((relative, kind, os.readlink(entry_name, dir_fd=owner_fd)))
+            return
+        if stat.S_ISREG(value.st_mode):
+            file_flags = os.O_RDONLY
+            if hasattr(os, "O_NOFOLLOW"):
+                file_flags |= os.O_NOFOLLOW
+            fd = os.open(entry_name, file_flags, dir_fd=owner_fd)
+            try:
+                if identity(os.fstat(fd)) != identity(value):
+                    raise OSError(errno.ESTALE, "file identity changed during validation", entry_name)
+                digest = hashlib.sha256()
+                while True:
+                    block = os.read(fd, 1024 * 1024)
+                    if not block:
+                        break
+                    digest.update(block)
+                if identity(os.fstat(fd)) != identity(value):
+                    raise OSError(errno.ESTALE, "file identity changed during validation", entry_name)
+                records.append((relative, kind, digest.hexdigest()))
+            finally:
+                os.close(fd)
+            return
+        if stat.S_ISDIR(value.st_mode):
+            fd = os.open(entry_name, flags, dir_fd=owner_fd)
+            try:
+                if identity(os.fstat(fd)) != identity(value):
+                    raise OSError(errno.ESTALE, "directory identity changed during validation", entry_name)
+                records.append((relative, kind, None))
+                for child in sorted(os.listdir(fd)):
+                    visit(fd, child, relative + (child,))
+            finally:
+                os.close(fd)
+            return
+        records.append((relative, kind, None))
+
+    visit(parent_fd, name, ())
+    return tuple(records)
+
+
 def make_owned_directory(parent_fd, name):
     global temporary_number
     while True:
@@ -420,11 +467,11 @@ def make_owned_directory(parent_fd, name):
         fd = os.open(temporary, flags, dir_fd=parent_fd)
         expected = identity(os.fstat(fd))
         rename_noreplace(parent_fd, temporary, parent_fd, name)
+        created_dirs.append((parent_fd, name, expected))
         run_hook("KCODE_RESTORE_TEST_AFTER_DIRECTORY_RENAME_HOOK", name, temporary_number)
         value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         if identity(value) != expected:
             raise OSError(errno.ESTALE, "created directory identity changed", name)
-        created_dirs.append((parent_fd, name, expected))
         return fd
     except Exception:
         if fd is not None:
@@ -448,6 +495,19 @@ def open_directory(parts):
         fd = make_owned_directory(parent_fd, name)
     fds[key] = fd
     return fd
+
+
+def open_directory_fresh(root_fd, parts):
+    fd = os.dup(root_fd)
+    try:
+        for component in parts:
+            child = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
 
 
 def open_owned_parent(root_fd, components, provenance):
@@ -485,8 +545,16 @@ def quarantine(parent_fd, name):
 def restore_quarantine(parent_fd, temporary, name):
     try:
         rename_noreplace(parent_fd, temporary, parent_fd, name)
-    except (FileExistsError, FileNotFoundError):
-        pass
+        return
+    except FileNotFoundError:
+        return
+    except FileExistsError as error:
+        recovery = f"kcode-restore-recovery-{os.getpid()}-{secrets.token_hex(12)}"
+        rename_noreplace(parent_fd, temporary, parent_fd, recovery)
+        raise RuntimeError(
+            f"safe rollback was impossible because {name!r} was recreated; "
+            f"preserved displaced data as {recovery!r}"
+        ) from error
 
 
 def remove_owned_entry(parent_fd, name, expected, mode):
@@ -544,19 +612,25 @@ def remove_owned_path(parent_fd, name, captured):
         try:
             os.rmdir(temporary, dir_fd=parent_fd)
         except OSError:
+            run_hook("KCODE_RESTORE_TEST_BEFORE_QUARANTINE_RESTORE_HOOK", name, 0)
             restore_quarantine(parent_fd, temporary, name)
     except OSError:
         restore_quarantine(parent_fd, temporary, name)
 
 
 def rollback():
+    failures = []
     for parent_fd, name, captured in reversed(created_paths):
         try:
             remove_owned_path(parent_fd, name, captured)
-        except OSError:
-            pass
+        except Exception as error:
+            failures.append(error)
     for parent_fd, name, expected in reversed(created_dirs):
-        remove_owned_entry(parent_fd, name, expected, stat.S_IFDIR)
+        try:
+            remove_owned_entry(parent_fd, name, expected, stat.S_IFDIR)
+        except Exception as error:
+            failures.append(error)
+    return failures
 
 
 def run_hook(variable, destination, number):
@@ -567,6 +641,7 @@ def run_hook(variable, destination, number):
 
 root_fd = os.open(os.path.sep, flags)
 fds[()] = root_fd
+validations = []
 try:
     home_parts = tuple(part for part in home.split(os.path.sep) if part)
     open_directory(home_parts)
@@ -579,29 +654,48 @@ try:
             parts = tuple(part for part in relative.split(os.path.sep) if part)
             parent_fd = open_directory(home_parts + parts[:-1])
             name = parts[-1]
+            source_parent = os.open(os.path.dirname(source), flags)
+            try:
+                expected_signature = content_signature(source_parent, os.path.basename(source))
+            finally:
+                os.close(source_parent)
             try:
                 os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             except FileNotFoundError:
-                pass
+                captured = capture_tree(source)
+                source_parent = os.open(os.path.dirname(source), flags)
+                try:
+                    rename_noreplace(source_parent, os.path.basename(source), parent_fd, name)
+                finally:
+                    os.close(source_parent)
+                created_paths.append((parent_fd, name, captured))
+                run_hook("KCODE_RESTORE_TEST_AFTER_RENAME_HOOK", destination, number)
+                value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if identity(value) != captured[0][1]:
+                    raise OSError(errno.ESTALE, "promoted path identity changed", destination)
+                run_hook("KCODE_RESTORE_TEST_AFTER_PROMOTE_HOOK", destination, number)
+                fail_after = os.environ.get("KCODE_RESTORE_TEST_FAIL_AFTER")
+                if fail_after and number == int(fail_after):
+                    raise OSError(errno.EIO, "injected restore promotion failure", destination)
             else:
-                raise FileExistsError(errno.EEXIST, "restore destination changed after preflight", destination)
-            captured = capture_tree(source)
-            source_parent = os.open(os.path.dirname(source), flags)
-            try:
-                rename_noreplace(source_parent, os.path.basename(source), parent_fd, name)
-            finally:
-                os.close(source_parent)
-            run_hook("KCODE_RESTORE_TEST_AFTER_RENAME_HOOK", destination, number)
-            value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            if identity(value) != captured[0][1]:
-                raise OSError(errno.ESTALE, "promoted path identity changed", destination)
-            created_paths.append((parent_fd, name, captured))
-            run_hook("KCODE_RESTORE_TEST_AFTER_PROMOTE_HOOK", destination, number)
-            fail_after = os.environ.get("KCODE_RESTORE_TEST_FAIL_AFTER")
-            if fail_after and number == int(fail_after):
-                raise OSError(errno.EIO, "injected restore promotion failure", destination)
-except Exception:
-    rollback()
+                if content_signature(parent_fd, name) != expected_signature:
+                    raise OSError(errno.ESTALE, "existing destination changed after preflight", destination)
+            validations.append((parent_fd, name, expected_signature, destination))
+    run_hook("KCODE_RESTORE_TEST_BEFORE_FINAL_VALIDATION_HOOK", home, len(validations))
+    for _, name, expected_signature, destination in validations:
+        relative = os.path.relpath(destination, home)
+        parts = tuple(part for part in relative.split(os.path.sep) if part)
+        parent_fd = open_directory_fresh(root_fd, home_parts + parts[:-1])
+        try:
+            if content_signature(parent_fd, name) != expected_signature:
+                raise OSError(errno.ESTALE, "restore destination changed before commit", destination)
+        finally:
+            os.close(parent_fd)
+except Exception as original:
+    failures = rollback()
+    if failures:
+        details = "; ".join(str(error) for error in failures)
+        raise RuntimeError(f"restore failed and rollback was incomplete: {details}") from original
     raise
 finally:
     for fd in reversed(tuple(fds.values())):
@@ -654,9 +748,7 @@ PY
     destination="$directory/$name"
     stage="$transaction/skill-$count"
     cp -R "$ROOT/$source" "$stage"
-    if [ ! -e "$destination" ] && [ ! -L "$destination" ]; then
-      printf '%s\t%s\n' "$stage" "$destination" >> "$plan"
-    fi
+    printf '%s\t%s\n' "$stage" "$destination" >> "$plan"
   done < <(manifest_rows)
 
   for target in claude codex; do
@@ -666,9 +758,7 @@ PY
     destination="$directory/.threejs-game-skills-managed"
     stage="$transaction/marker-$target"
     printf '%s\n' "$expected" > "$stage"
-    if [ ! -e "$destination" ] && [ ! -L "$destination" ]; then
-      printf '%s\t%s\n' "$stage" "$destination" >> "$plan"
-    fi
+    printf '%s\t%s\n' "$stage" "$destination" >> "$plan"
   done
 
   if [ -n "${KCODE_RESTORE_TEST_HOOK:-}" ]; then
