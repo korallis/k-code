@@ -115,6 +115,84 @@ EOF_HOOK
   pass 'existing mounted homes stage and promote without an EXDEV boundary'
 }
 
+test_restore_nested_target_mount() {
+  local temp home mounted probe probe_target hook runner out
+  if [ "$(uname -s)" != Linux ] || ! command -v unshare >/dev/null 2>&1 \
+    || ! command -v mount >/dev/null 2>&1 || [ ! -d /dev/shm ] || [ ! -w /dev/shm ]; then
+    pass 'nested target-root EXDEV regression # SKIP distinct mount unavailable'
+    return
+  fi
+  temp=$(physical_temp_root kcode-skills-nested-exdev)
+  home="$temp/home"
+  mounted=$(mktemp -d /dev/shm/kcode-skills-target.XXXXXX)
+  probe="$temp/probe"
+  probe_target="$temp/probe-target"
+  hook="$temp/assert-target-staging"
+  runner="$temp/run-mounted-restore"
+  mkdir -p "$home/.claude/skills" "$probe_target"
+  if python3 - "$home" "$mounted" <<'PY'
+import os
+import sys
+
+raise SystemExit(os.stat(sys.argv[1]).st_dev == os.stat(sys.argv[2]).st_dev)
+PY
+  then
+    :
+  else
+    rm -rf "$temp" "$mounted"
+    pass 'nested target-root EXDEV regression # SKIP no distinct writable filesystem'
+    return
+  fi
+  cat > "$probe" <<EOF_PROBE
+#!/usr/bin/env bash
+set -euo pipefail
+mount --bind '$mounted' '$probe_target'
+umount '$probe_target'
+EOF_PROBE
+  chmod +x "$probe"
+  if ! unshare --user --map-root-user --mount "$probe" >/dev/null 2>&1; then
+    rm -rf "$temp" "$mounted"
+    pass 'nested target-root EXDEV regression # SKIP mount namespace unavailable'
+    return
+  fi
+  cat > "$hook" <<EOF_HOOK
+#!/usr/bin/env bash
+set -euo pipefail
+case "\$1" in
+  '$home/.claude/skills/'*)
+    python3 - "\$1" '$home/.claude/skills' '$home' <<'PY'
+import os
+import sys
+
+staging, target, home = sys.argv[1:]
+if os.stat(staging).st_dev != os.stat(target).st_dev:
+    raise SystemExit("target staging is not on the destination filesystem")
+if os.stat(staging).st_dev == os.stat(home).st_dev:
+    raise SystemExit("fixture did not cross a nested filesystem boundary")
+PY
+    printf 'observed\n' > '$temp/target-staging-observed'
+    ;;
+esac
+EOF_HOOK
+  cat > "$runner" <<EOF_RUNNER
+#!/usr/bin/env bash
+set -euo pipefail
+mount --bind '$mounted' '$home/.claude/skills'
+KCODE_RESTORE_TEST_AFTER_TARGET_STAGING_MKDIR_HOOK='$hook' \
+  '$SKILLS' restore --home '$home' >/dev/null
+'$SKILLS' verify-home --home '$home' >/dev/null
+EOF_RUNNER
+  chmod +x "$hook" "$runner"
+  out=$(unshare --user --map-root-user --mount "$runner" 2>&1) \
+    || fail "restore failed across a nested target-root mount: $out"
+  assert_present "$temp/target-staging-observed" \
+    'restore did not stage a payload inside the mounted target root'
+  [ -f "$mounted/workflow/SKILL.md" ] \
+    || fail 'mounted target root did not receive the restored payload'
+  rm -rf "$temp" "$mounted"
+  pass 'nested target roots stage and promote on their own filesystem'
+}
+
 test_restore_preserves_and_verifies_executable_modes() {
   local temp home executable out rc
   temp=$(physical_temp_root kcode-skills-modes)
@@ -966,6 +1044,7 @@ EOF_JSON
 test_snapshot_verifies
 test_clean_home_restore
 test_restore_stages_on_destination_filesystem
+test_restore_nested_target_mount
 test_restore_preserves_and_verifies_executable_modes
 test_snapshot_rejects_corrupt_provenance
 test_snapshot_rejects_coordinated_content_corruption

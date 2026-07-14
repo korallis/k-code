@@ -635,10 +635,11 @@ def capture_tree_at(parent_fd, name):
 expected_hashes = {}
 expected_modes = {}
 staging_owned = {}
+payload_staging = []
 
 
-def record_staging_entry(relative, value):
-    staging_owned[relative] = (identity(value), value.st_mode)
+def record_staging_entry(owned, relative, value):
+    owned[relative] = (identity(value), value.st_mode)
 
 
 def open_directory_at(root_directory_fd, components):
@@ -664,7 +665,7 @@ def assert_named_directory_identity(root_directory_fd, components, expected):
 
 
 def copy_snapshot_directory(
-    source_fd, parent_fd, name, relative, staged_relative, encountered=None
+    source_fd, parent_fd, name, relative, staged_relative, owned, encountered=None
 ):
     is_root = encountered is None
     if encountered is None:
@@ -682,7 +683,7 @@ def copy_snapshot_directory(
     if identity(destination_value) != identity(named_value):
         os.close(destination_fd)
         raise OSError(errno.ESTALE, "staging directory identity changed", staged_relative)
-    record_staging_entry(staged_relative, destination_value)
+    record_staging_entry(owned, staged_relative, destination_value)
     try:
         for child in sorted(os.listdir(source_fd)):
             value = os.stat(child, dir_fd=source_fd, follow_symlinks=False)
@@ -699,6 +700,7 @@ def copy_snapshot_directory(
                         child,
                         child_relative,
                         child_staged_relative,
+                        owned,
                         encountered,
                     )
                     if identity(os.fstat(child_source_fd)) != identity(value):
@@ -722,7 +724,7 @@ def copy_snapshot_directory(
                 dir_fd=destination_fd,
             )
             os.fchmod(destination_file_fd, expected_mode)
-            record_staging_entry(child_staged_relative, os.fstat(destination_file_fd))
+            record_staging_entry(owned, child_staged_relative, os.fstat(destination_file_fd))
             digest = hashlib.sha256()
             try:
                 opened_value = os.fstat(child_source_fd)
@@ -771,9 +773,9 @@ def copy_snapshot_directory(
         )
 
 
-def write_entry(parent_fd, name, content):
+def write_entry(parent_fd, name, content, owned):
     fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent_fd)
-    record_staging_entry((name,), os.fstat(fd))
+    record_staging_entry(owned, (name,), os.fstat(fd))
     try:
         data = content.encode()
         while data:
@@ -783,14 +785,14 @@ def write_entry(parent_fd, name, content):
         os.close(fd)
 
 
-def remove_staging(parent_fd, staging_fd, staging_name, expected):
+def remove_staging(parent_fd, staging_fd, staging_name, expected, owned):
     if identity(os.fstat(staging_fd)) != expected:
         os.close(staging_fd)
         raise OSError(errno.ESTALE, "owned staging directory identity changed", staging_name)
 
     provenance = {
         components: (expected_identity, mode)
-        for components, (expected_identity, mode) in staging_owned.items()
+        for components, (expected_identity, mode) in owned.items()
     }
     for components, (expected_identity, mode) in sorted(
         provenance.items(), key=lambda item: (len(item[0]), item[0]), reverse=True
@@ -917,9 +919,9 @@ def create_private_directory(parent_fd, prefix):
 
 
 def make_owned_directory(parent_fd, name):
-    temporary, fd, expected = create_private_directory(staging_fd, "kcode-directory")
+    temporary, fd, expected = create_private_directory(parent_fd, "kcode-directory")
     try:
-        rename_noreplace(staging_fd, temporary, parent_fd, name)
+        rename_noreplace(parent_fd, temporary, parent_fd, name)
         created_dirs.append((parent_fd, name, expected))
         run_hook("KCODE_RESTORE_TEST_AFTER_DIRECTORY_RENAME_HOOK", name, temporary)
         value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
@@ -929,7 +931,7 @@ def make_owned_directory(parent_fd, name):
     except Exception:
         os.close(fd)
         try:
-            os.rmdir(temporary, dir_fd=staging_fd)
+            os.rmdir(temporary, dir_fd=parent_fd)
         except FileNotFoundError:
             pass
         raise
@@ -1164,6 +1166,7 @@ try:
     run_hook("KCODE_RESTORE_TEST_AFTER_STAGING_MKDIR_HOOK", staging_path, 0)
     assert_named_directory_identity(root_fd, staging_parent_parts, staging_parent_expected)
 
+    row_specs = []
     rows = []
     threejs = {"claude": [], "codex": []}
     manifest_fd = os.open(os.path.relpath(manifest, root), checksum_flags, dir_fd=project_fd)
@@ -1176,56 +1179,89 @@ try:
     if hashlib.sha256(manifest_bytes).hexdigest() != manifest_digest:
         raise OSError(errno.EBADMSG, "restore manifest bytes changed after verification")
     for row in manifest_bytes.decode("utf-8").splitlines():
-            if not row.strip() or row.startswith("#"):
-                continue
-            source, target, name = row.split("\t")
-            target_root = {
-                "generic": ".agents/skills",
-                "claude": ".claude/skills",
-                "codex": ".codex/skills",
-                "grok": ".grok/skills",
-            }[target]
-            destination = os.path.join(home, target_root, name)
-            staged_name = f"skill-{len(rows) + 1}"
-            source_parts = tuple(part for part in source.split(os.path.sep) if part)
-            source_fd = open_directory_at(project_fd, source_parts)
-            try:
-                run_hook(
-                    "KCODE_RESTORE_TEST_AFTER_SOURCE_OPEN_HOOK", source, len(rows) + 1
-                )
-                copy_snapshot_directory(
-                    source_fd, staging_fd, staged_name, source, (staged_name,)
-                )
-            finally:
-                os.close(source_fd)
-            rows.append((staged_name, destination))
-            if target in threejs and source.startswith("skill-snapshot/vendor/threejs-game-skills/"):
-                threejs[target].append(name)
-    for target in ("claude", "codex"):
-        if not threejs[target]:
+        if not row.strip() or row.startswith("#"):
             continue
-        staged_name = f"marker-{target}"
-        write_entry(staging_fd, staged_name, "\n".join(sorted(threejs[target])) + "\n")
-        rows.append((staged_name, os.path.join(home, f".{target}/skills/.threejs-game-skills-managed")))
+        source, target, name = row.split("\t")
+        target_root = {
+            "generic": ".agents/skills",
+            "claude": ".claude/skills",
+            "codex": ".codex/skills",
+            "grok": ".grok/skills",
+        }[target]
+        row_specs.append((source, target_root, name, None))
+        if target in threejs and source.startswith("skill-snapshot/vendor/threejs-game-skills/"):
+            threejs[target].append(name)
+    for target in ("claude", "codex"):
+        if threejs[target]:
+            row_specs.append((
+                None,
+                f".{target}/skills",
+                ".threejs-game-skills-managed",
+                "\n".join(sorted(threejs[target])) + "\n",
+            ))
 
+    assert_named_directory_identity(root_fd, staging_parent_parts, staging_parent_expected)
+    open_directory(home_parts)
     hook = os.environ.get("KCODE_RESTORE_TEST_HOOK")
     if hook:
         subprocess.run((hook, home), check=True)
-    assert_named_directory_identity(root_fd, staging_parent_parts, staging_parent_expected)
-    open_directory(home_parts)
-    for number, (staged_name, destination) in enumerate(rows, 1):
+
+    areas = {}
+    for number, (source, target_root, name, content) in enumerate(row_specs, 1):
+        root_parts_relative = tuple(
+            part for part in target_root.split(os.path.sep) if part
+        )
+        target_root_fd = open_directory(home_parts + root_parts_relative)
+        area = areas.get(root_parts_relative)
+        if area is None:
+            area_name, area_fd, area_expected = create_private_directory(
+                target_root_fd, "kcode-restore"
+            )
+            area_owned = {}
+            area_path = os.path.join(home, target_root, area_name)
+            area = (target_root_fd, area_name, area_fd, area_expected, area_owned, area_path)
+            areas[root_parts_relative] = area
+            payload_staging.append(area)
+            run_hook(
+                "KCODE_RESTORE_TEST_AFTER_TARGET_STAGING_MKDIR_HOOK",
+                area_path,
+                len(payload_staging),
+            )
+        _, _, area_fd, _, area_owned, _ = area
+        staged_name = f"payload-{number}"
+        if source is None:
+            write_entry(area_fd, staged_name, content, area_owned)
+        else:
+            source_parts = tuple(part for part in source.split(os.path.sep) if part)
+            source_fd = open_directory_at(project_fd, source_parts)
+            try:
+                run_hook("KCODE_RESTORE_TEST_AFTER_SOURCE_OPEN_HOOK", source, number)
+                copy_snapshot_directory(
+                    source_fd,
+                    area_fd,
+                    staged_name,
+                    source,
+                    (staged_name,),
+                    area_owned,
+                )
+            finally:
+                os.close(source_fd)
+        destination = os.path.join(home, target_root, name)
+        rows.append((area_fd, staged_name, destination))
+
+    for number, (area_fd, staged_name, destination) in enumerate(rows, 1):
         relative = os.path.relpath(destination, home)
         if relative == os.pardir or relative.startswith(os.pardir + os.path.sep):
             raise OSError(errno.EPERM, "restore destination escapes requested home", destination)
         parts = tuple(part for part in relative.split(os.path.sep) if part)
         parent_fd = open_directory(home_parts + parts[:-1])
         name = parts[-1]
-        expected_signature = content_signature(staging_fd, staged_name)
+        expected_signature = content_signature(area_fd, staged_name)
         try:
             os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
-            captured = capture_tree_at(staging_fd, staged_name)
-            rename_noreplace(staging_fd, staged_name, parent_fd, name)
+            captured = capture_tree_at(area_fd, staged_name)
+            rename_noreplace(area_fd, staged_name, parent_fd, name)
             created_paths.append((parent_fd, name, captured))
             run_hook("KCODE_RESTORE_TEST_AFTER_RENAME_HOOK", destination, number)
             value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
@@ -1257,23 +1293,37 @@ except Exception as original:
         raise RuntimeError(f"restore failed and rollback was incomplete: {details}") from original
     raise
 finally:
-    cleanup_error = None
+    active_failure = sys.exc_info()[0] is not None
+    cleanup_errors = []
+    for parent_fd, name, fd, expected, owned, _ in reversed(payload_staging):
+        try:
+            remove_staging(parent_fd, fd, name, expected, owned)
+        except Exception as error:
+            cleanup_errors.append(error)
     if staging_fd is not None:
         try:
-            remove_staging(staging_parent_fd, staging_fd, staging_name, staging_expected)
+            remove_staging(
+                staging_parent_fd,
+                staging_fd,
+                staging_name,
+                staging_expected,
+                staging_owned,
+            )
         except Exception as error:
-            cleanup_error = error
-    if staging_parent_fd is not None:
-        os.close(staging_parent_fd)
-    os.close(project_fd)
-    if cleanup_error is not None:
+            cleanup_errors.append(error)
+    if active_failure or cleanup_errors:
         failures = rollback()
         if failures:
             details = "; ".join(str(error) for error in failures)
+            cause = cleanup_errors[0] if cleanup_errors else sys.exc_info()[1]
             raise RuntimeError(
                 f"staging cleanup failed and rollback was incomplete: {details}"
-            ) from cleanup_error
-        raise cleanup_error
+            ) from cause
+    if staging_parent_fd is not None:
+        os.close(staging_parent_fd)
+    os.close(project_fd)
+    if cleanup_errors:
+        raise cleanup_errors[0]
     for fd in reversed(tuple(fds.values())):
         os.close(fd)
 PY
