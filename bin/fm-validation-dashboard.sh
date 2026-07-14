@@ -61,7 +61,7 @@ color_for() {
 # Compose one full frame into stdout. Every line is padded to the terminal width
 # so a shorter new line fully overwrites a longer previous one (no leftovers).
 compose() {
-  local cols now line pad
+  local cols now line
   cols="$(term_cols)"
   now="$(date '+%H:%M:%S')"
   pad() { printf '%-*.*s' "$cols" "$cols" "$1"; }

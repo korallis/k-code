@@ -1,3 +1,4 @@
+projects/
 state/
 .no-mistakes/
 .lavish/
@@ -6,6 +7,7 @@ state/
 .env
 *.key
 *credential*
+!skill-snapshot/vendor/**
 config/x-mode.env
 config/cmux-socket-password
 .DS_Store

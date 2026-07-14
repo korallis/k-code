@@ -1,0 +1,15 @@
+# observed_root	harnesses	state	entries	treatment
+<repo>/.agents/skills	Pi,Codex	present	12 internal skills	Tracked in place and checksum-verified.
+<repo>/.claude/skills	Claude,Grok	symlink to ../.agents/skills	12 internal skills	Tracked as a relative link with no machine-specific target.
+<repo>/skills	installer-facing	present	1 public skill	Tracked in place and checksum-verified.
+~/.agents/skills	Pi,generic	present	1 skill: no-mistakes	Vendored once and restored to the generic root.
+~/.pi/agent/skills	Pi	absent	0 skills	No directory or source was omitted.
+~/.pi/agent/npm	Pi	present	@firstpick/pi-themes-bundle 0.1.4 and pi-xai-oauth 1.3.3	Both packages expose themes or extensions and no skills.
+~/.claude/skills	Claude	present	17 skills plus one manager marker	The 17 sources are vendored and the marker is regenerated from restore.tsv.
+~/.claude/plugins/.../vercel/0.44.0/skills	Claude	active plugin	28 skills	Only redistributable skill source and plugin metadata were captured; no cache was copied.
+~/.codex/skills	Codex	present	16 user skills plus 5 .system skills and one manager marker	User sources are vendored; system skills are pinned in harness-managed.tsv; the marker is regenerated.
+~/.codex/.tmp/plugins	Codex	cache	0 installed plugins	Not captured because codex plugin list reported every marketplace plugin as not installed.
+~/.grok/skills	Grok	present	24 skills	Sixteen community skills are vendored; eight harness-managed skills are pinned in harness-managed.tsv.
+~/.grok/bundled/skills	Grok	present	9 skills plus shared support files	Version-coupled harness resources are pinned in harness-managed.tsv.
+~/.grok/marketplace-cache	Grok	cache	0 installed plugins	Not captured because grok plugin list reported no installed plugins.
+~/.claude/skills	Grok compatibility	active duplicate	17 skills	Grok also scans this root; identical community sources are vendored only once.
