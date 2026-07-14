@@ -347,7 +347,7 @@ preflight_threejs_marker() {
 
 promote_restore_plan() {
   local home=$1
-  python3 - "$home" "$ROOT" "$RESTORE_MANIFEST" <<'PY'
+  python3 - "$home" "$ROOT" "$RESTORE_MANIFEST" "$CHECKSUMS" <<'PY'
 import ctypes
 import errno
 import hashlib
@@ -358,7 +358,7 @@ import stat
 import subprocess
 import sys
 
-home, root, manifest = map(os.path.abspath, sys.argv[1:])
+home, root, manifest, checksums_path = map(os.path.abspath, sys.argv[1:])
 flags = os.O_RDONLY | os.O_DIRECTORY
 if hasattr(os, "O_NOFOLLOW"):
     flags |= os.O_NOFOLLOW
@@ -410,37 +410,82 @@ def capture_tree_at(parent_fd, name):
     return captured
 
 
-def copy_entry(source, parent_fd, name):
-    value = os.stat(source, follow_symlinks=False)
-    mode = stat.S_IMODE(value.st_mode)
-    if stat.S_ISDIR(value.st_mode):
-        os.mkdir(name, mode=mode, dir_fd=parent_fd)
-        child_fd = os.open(name, flags, dir_fd=parent_fd)
-        try:
-            for child in sorted(os.listdir(source)):
-                copy_entry(os.path.join(source, child), child_fd, child)
-        finally:
-            os.close(child_fd)
-        return
-    if not stat.S_ISREG(value.st_mode):
-        raise OSError(errno.EPERM, "snapshot staging accepts only files and directories", source)
-    source_flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        source_flags |= os.O_NOFOLLOW
-    source_fd = os.open(source, source_flags)
-    destination_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode, dir_fd=parent_fd)
+expected_hashes = {}
+
+
+def open_directory_at(root_directory_fd, components):
+    fd = os.dup(root_directory_fd)
     try:
-        while True:
-            block = os.read(source_fd, 1024 * 1024)
-            if not block:
-                break
-            view = memoryview(block)
-            while view:
-                written = os.write(destination_fd, view)
-                view = view[written:]
+        for component in components:
+            child = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def copy_snapshot_directory(source_fd, parent_fd, name, relative):
+    source_value = os.fstat(source_fd)
+    if not stat.S_ISDIR(source_value.st_mode):
+        raise OSError(errno.ENOTDIR, "snapshot source is not a directory", relative)
+    os.mkdir(name, mode=stat.S_IMODE(source_value.st_mode), dir_fd=parent_fd)
+    destination_fd = os.open(name, flags, dir_fd=parent_fd)
+    try:
+        for child in sorted(os.listdir(source_fd)):
+            value = os.stat(child, dir_fd=source_fd, follow_symlinks=False)
+            child_relative = f"{relative}/{child}"
+            if stat.S_ISDIR(value.st_mode):
+                child_source_fd = os.open(child, flags, dir_fd=source_fd)
+                try:
+                    if identity(os.fstat(child_source_fd)) != identity(value):
+                        raise OSError(errno.ESTALE, "snapshot directory identity changed", child_relative)
+                    copy_snapshot_directory(
+                        child_source_fd, destination_fd, child, child_relative
+                    )
+                    if identity(os.fstat(child_source_fd)) != identity(value):
+                        raise OSError(errno.ESTALE, "snapshot directory changed during copy", child_relative)
+                finally:
+                    os.close(child_source_fd)
+                continue
+            if not stat.S_ISREG(value.st_mode):
+                raise OSError(errno.EPERM, "snapshot accepts only files and directories", child_relative)
+            source_flags = os.O_RDONLY
+            if hasattr(os, "O_NOFOLLOW"):
+                source_flags |= os.O_NOFOLLOW
+            child_source_fd = os.open(child, source_flags, dir_fd=source_fd)
+            destination_file_fd = os.open(
+                child,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IMODE(value.st_mode),
+                dir_fd=destination_fd,
+            )
+            digest = hashlib.sha256()
+            try:
+                if identity(os.fstat(child_source_fd)) != identity(value):
+                    raise OSError(errno.ESTALE, "snapshot file identity changed", child_relative)
+                while True:
+                    block = os.read(child_source_fd, 1024 * 1024)
+                    if not block:
+                        break
+                    digest.update(block)
+                    view = memoryview(block)
+                    while view:
+                        written = os.write(destination_file_fd, view)
+                        view = view[written:]
+                if identity(os.fstat(child_source_fd)) != identity(value):
+                    raise OSError(errno.ESTALE, "snapshot file changed during copy", child_relative)
+            finally:
+                os.close(destination_file_fd)
+                os.close(child_source_fd)
+            expected = expected_hashes.get(child_relative)
+            if expected is None or digest.hexdigest() != expected:
+                raise OSError(errno.EBADMSG, "snapshot checksum mismatch during copy", child_relative)
     finally:
         os.close(destination_fd)
-        os.close(source_fd)
+    if identity(os.fstat(source_fd)) != identity(source_value):
+        raise OSError(errno.ESTALE, "snapshot source changed during copy", relative)
 
 
 def write_entry(parent_fd, name, content):
@@ -456,7 +501,20 @@ def write_entry(parent_fd, name, content):
 
 def remove_staging(parent_fd, staging_fd, staging_name, expected):
     if identity(os.fstat(staging_fd)) != expected:
-        raise OSError(errno.ESTALE, "staging directory identity changed", staging_name)
+        os.close(staging_fd)
+        for candidate in os.listdir(parent_fd):
+            value = os.stat(candidate, dir_fd=parent_fd, follow_symlinks=False)
+            if identity(value) != expected:
+                continue
+            owned_fd = os.open(candidate, flags, dir_fd=parent_fd)
+            try:
+                if identity(os.fstat(owned_fd)) != expected or os.listdir(owned_fd):
+                    raise OSError(errno.ESTALE, "owned staging directory changed", candidate)
+            finally:
+                os.close(owned_fd)
+            os.rmdir(candidate, dir_fd=parent_fd)
+            return
+        return
 
     def empty(directory_fd):
         for name in os.listdir(directory_fd):
@@ -716,6 +774,21 @@ def run_hook(variable, destination, number):
 
 root_fd = os.open(os.path.sep, flags)
 fds[()] = root_fd
+root_parts = tuple(part for part in root.split(os.path.sep) if part)
+project_fd = open_directory_at(root_fd, root_parts)
+checksum_flags = os.O_RDONLY
+if hasattr(os, "O_NOFOLLOW"):
+    checksum_flags |= os.O_NOFOLLOW
+checksums_fd = os.open(
+    os.path.relpath(checksums_path, root), checksum_flags, dir_fd=project_fd
+)
+checksums_value = os.fstat(checksums_fd)
+with os.fdopen(checksums_fd, encoding="utf-8") as checksum_rows:
+    for row in checksum_rows:
+        digest, relative = row.rstrip("\n").split(None, 1)
+        expected_hashes[relative] = digest
+    if identity(os.fstat(checksum_rows.fileno())) != identity(checksums_value):
+        raise OSError(errno.ESTALE, "checksum manifest changed while reading")
 validations = []
 staging_fd = None
 staging_parent_fd = None
@@ -736,12 +809,19 @@ try:
     run_hook("KCODE_RESTORE_TEST_AFTER_STAGING_PARENT_OPEN_HOOK", home, existing_depth)
     staging_name = f".kcode-restore-{os.getpid()}-{secrets.token_hex(12)}"
     os.mkdir(staging_name, mode=0o700, dir_fd=staging_parent_fd)
+    staged_value = os.stat(staging_name, dir_fd=staging_parent_fd, follow_symlinks=False)
+    staging_expected = identity(staged_value)
+    staging_path = os.path.join(os.path.sep, *home_parts[:existing_depth], staging_name)
+    run_hook("KCODE_RESTORE_TEST_AFTER_STAGING_MKDIR_HOOK", staging_path, 0)
     staging_fd = os.open(staging_name, flags, dir_fd=staging_parent_fd)
-    staging_expected = identity(os.fstat(staging_fd))
+    if identity(os.fstat(staging_fd)) != staging_expected:
+        raise OSError(errno.ESTALE, "staging directory changed before descriptor binding", staging_name)
 
     rows = []
     threejs = {"claude": [], "codex": []}
-    with open(manifest, encoding="utf-8") as source_rows:
+    manifest_fd = os.open(os.path.relpath(manifest, root), checksum_flags, dir_fd=project_fd)
+    manifest_value = os.fstat(manifest_fd)
+    with os.fdopen(manifest_fd, encoding="utf-8") as source_rows:
         for row in source_rows:
             if not row.strip() or row.startswith("#"):
                 continue
@@ -754,10 +834,20 @@ try:
             }[target]
             destination = os.path.join(home, target_root, name)
             staged_name = f"skill-{len(rows) + 1}"
-            copy_entry(os.path.join(root, source), staging_fd, staged_name)
+            source_parts = tuple(part for part in source.split(os.path.sep) if part)
+            source_fd = open_directory_at(project_fd, source_parts)
+            try:
+                run_hook(
+                    "KCODE_RESTORE_TEST_AFTER_SOURCE_OPEN_HOOK", source, len(rows) + 1
+                )
+                copy_snapshot_directory(source_fd, staging_fd, staged_name, source)
+            finally:
+                os.close(source_fd)
             rows.append((staged_name, destination))
             if target in threejs and source.startswith("skill-snapshot/vendor/threejs-game-skills/"):
                 threejs[target].append(name)
+        if identity(os.fstat(source_rows.fileno())) != identity(manifest_value):
+            raise OSError(errno.ESTALE, "restore manifest changed while reading")
     for target in ("claude", "codex"):
         if not threejs[target]:
             continue
@@ -816,6 +906,7 @@ finally:
         remove_staging(staging_parent_fd, staging_fd, staging_name, staging_expected)
     if staging_parent_fd is not None:
         os.close(staging_parent_fd)
+    os.close(project_fd)
     for fd in reversed(tuple(fds.values())):
         os.close(fd)
 PY

@@ -162,6 +162,65 @@ EOF_HOOK
   pass 'staging remains descriptor-bound across parent swaps and cleans safely'
 }
 
+test_restore_rejects_replaced_staging_directory() {
+  local temp home hook out rc replacement displaced
+  temp=$(physical_temp_root kcode-skills-staging-create-race)
+  home="$temp/home"
+  hook="$temp/replace-staging"
+  mkdir -p "$home"
+  cat > "$hook" <<'EOF_HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+mv "$1" "$1.displaced"
+mkdir "$1"
+printf 'foreign staging replacement\n' > "$1/foreign.txt"
+EOF_HOOK
+  chmod +x "$hook"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_AFTER_STAGING_MKDIR_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore accepted a staging directory replaced before descriptor binding'
+  replacement=$(find "$temp" -maxdepth 1 -name '.kcode-restore-*' ! -name '*.displaced' -print -quit)
+  displaced=$(find "$temp" -maxdepth 1 -name '.kcode-restore-*.displaced' -print -quit)
+  [ -n "$replacement" ] && [ "$(cat "$replacement/foreign.txt")" = 'foreign staging replacement' ] \
+    || fail "restore changed the foreign staging replacement: $out"
+  [ -z "$displaced" ] || fail 'restore stranded the staging directory it created'
+  pass 'staging ownership is verified before use and cleans only its own directory'
+}
+
+test_restore_uses_open_verified_snapshot_sources() {
+  local temp home hook source original displaced foreign expected actual out rc
+  temp=$(physical_temp_root kcode-skills-source-race)
+  home="$temp/home"
+  hook="$temp/replace-source"
+  source='skill-snapshot/vendor/vercel-plugin/skills/vercel-storage'
+  original="$ROOT/$source"
+  displaced="$original.kcode-test-displaced"
+  foreign="$original.kcode-test-foreign"
+  expected=$(shasum -a 256 "$original/SKILL.md" | awk '{print $1}')
+  cat > "$hook" <<EOF_HOOK
+#!/usr/bin/env bash
+set -euo pipefail
+[ "\$1" = '$source' ] || exit 0
+mv '$original' '$displaced'
+mkdir '$original'
+printf '%s\n' 'unchecked replacement' > '$original/SKILL.md'
+EOF_HOOK
+  chmod +x "$hook"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_AFTER_SOURCE_OPEN_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  mv "$original" "$foreign"
+  mv "$displaced" "$original"
+  rm -rf "$foreign"
+  [ "$rc" -eq 0 ] || fail "restore failed while copying an already-open verified source: $out"
+  actual=$(shasum -a 256 "$home/.claude/skills/vercel-storage/SKILL.md" | awk '{print $1}')
+  [ "$actual" = "$expected" ] || fail 'restore copied unchecked content from a replaced snapshot path'
+  pass 'snapshot traversal stays bound to verified no-follow source descriptors'
+}
+
 test_restore_revalidates_promotion_ancestors() {
   local temp home outside hook out rc
   temp=$(physical_temp_root kcode-skills-promotion-symlink)
@@ -488,6 +547,8 @@ test_restore_refuses_different_existing_skill
 test_restore_preflights_late_marker_conflict
 test_restore_rolls_back_late_write_failure
 test_restore_staging_parent_swap_cannot_redirect_io
+test_restore_rejects_replaced_staging_directory
+test_restore_uses_open_verified_snapshot_sources
 test_restore_revalidates_promotion_ancestors
 test_restore_preserves_concurrent_destination
 test_restore_rollback_preserves_concurrent_child
