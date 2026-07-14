@@ -4,4 +4,4 @@
 
 - k-zero [no-mistakes +yolo] - F-Zero-style anti-gravity battle racer; PIVOTING (captain, 2026-07-13) from browser (Vite + React 19 + R3F + Rapier) to native iOS/iPadOS app on the Unity engine for AAA fidelity (Forza/GTA-class bar, Tripo-generated assets, SpacetimeDB multiplayer via C# SDK); transformation plan in progress (added 2026-07-13)
 
-- k-code [no-mistakes +yolo] - Captain-controlled Firstmate fork and canonical version-controlled operating home, carrying all our adjustments (agent, config, memory, dashboard, projects as submodules); README + docs maintained here (added 2026-07-13)
+- k-code [no-mistakes +yolo] - Captain-controlled Firstmate fork and canonical version-controlled operating home, carrying public-safe agent, config, memory, dashboard, packaging, and skill-snapshot adjustments while product repositories remain local and untracked (added 2026-07-13)

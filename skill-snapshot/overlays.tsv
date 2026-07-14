@@ -1,0 +1,2 @@
+# overlay_id	source_id	base_revision	target_path	correction_identity	sha256	verification
+pi-max-effort	firstmate-internal	ad9f3a71894a96f0af5b9e0fe238acda855d6478	.agents/skills/harness-adapters/SKILL.md	k-code:78ee02cce9100d9adc3410f66f2497b7e357df6a	7258a79dd094101bcb99d3098a26dea5f0142f3bd764af5484b59e22c26f0158	Pi 0.80.6 help advertises max and the active openai-codex/gpt-5.6-sol route completed with --thinking max.

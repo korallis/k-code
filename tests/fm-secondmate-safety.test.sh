@@ -1088,6 +1088,7 @@ test_home_seed_refuses_symlinked_leaf_files() {
     rm -rf "$subhome" "$sink"
     git clone --quiet "$ROOT" "$subhome"
     mkdir -p "$(dirname "$subhome/$leaf")" "$(dirname "$sink")"
+    rm -f "$subhome/$leaf"
     expected=outside
     if [ "$leaf" = ".fm-secondmate-home" ]; then
       expected=design

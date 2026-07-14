@@ -176,7 +176,7 @@ This section is the single owner of the canonical schema and its per-field seman
     {
       "when": "<natural-language condition describing a kind of task>",
       "use": [
-        { "harness": "<adapter>", "model": "<optional model>", "effort": "<low|medium|high|xhigh|max, optional>" }
+        { "harness": "<adapter>", "model": "<optional model>", "effort": "<optional effort>", "quota": { "provider": "<name>", "window": "<id>", "percentRemainingAbove": 0, "fallback": { "harness": "<adapter>" } } }
       ],
       "select": "<optional strategy>",
       "why": "<optional rationale that helps firstmate choose>"
@@ -189,16 +189,20 @@ This section is the single owner of the canonical schema and its per-field seman
 Per rule, `when` and `use` are required.
 `use` may be a single profile object or an ordered array of profile objects; the single-object form stays fully backward-compatible, and every profile needs `harness`.
 `use.model`, `use.effort`, and `why` are optional.
-`select` is optional and currently supports `quota-balanced`.
+`select` is optional and supports `quota-balanced` and `all`.
+`all` requires an array and resolves it through `bin/fm-dispatch-select.sh` before fanning the task out once per ordered profile; each child gets the same task contract and firstmate converges their results.
+A profile inside an `all` array may declare `quota: {"provider":"<name>","window":"<id>","percentRemainingAbove":<number>,"fallback":<profile>}`.
+The guarded profile is selected only when quota-axi returns a fresh named provider with a numeric named-window percentage strictly above the threshold; exhausted, missing, stale, unparseable, or unavailable quota selects the fallback, while unguarded siblings remain unchanged.
+Fallback profiles cannot contain another quota guard.
 Absent `select` means use the first array element, or the only object in the single-object form; the first array element is the deterministic tie-break and the ultimate fallback.
 `default` is optional.
 An omitted model or effort means the selected harness uses its own default for that axis.
 If a selected profile carries an effort value the chosen harness does not accept, `fm-spawn.sh` records the requested `effort=` in task meta for traceability but omits the launch flag, and bootstrap reports the invalid harness/effort pair as a `CREW_DISPATCH` diagnostic when it is visible in the file.
-`quota-balanced` selection is deterministic and implemented by `bin/fm-dispatch-select.sh`, whose header owns the general-window rules, the 20 point stale-clear freshness margin, vendor-availability handling, and the degrade-to-first-element fallbacks; quota trouble never blocks dispatch.
+`bin/fm-dispatch-select.sh` owns both deterministic selector contracts: `quota-balanced` uses the documented general-window rules and 20 point stale-clear margin, while `all` reads quota once and resolves profile guards without changing unguarded siblings; quota trouble never blocks dispatch.
 See [`docs/examples/crew-dispatch.json`](examples/crew-dispatch.json) for a starting point to copy into local `config/crew-dispatch.json`.
 When the file exists, bootstrap validates it with `jq`.
 Valid files produce a `CREW_DISPATCH: active config/crew-dispatch.json` block that lists each rule and prints `default:` when present.
-Malformed JSON, an unverified harness, a malformed array profile, an unknown `select`, or an effort value unsupported by that harness is reported as `CREW_DISPATCH: invalid config/crew-dispatch.json - ...`; missing `jq` is reported through the normal `MISSING: jq` install-consent flow.
+Malformed JSON, an unverified harness, a malformed array or quota fallback profile, a quota guard outside `select: "all"`, `select: "all"` without an array, an unknown `select`, or an effort value unsupported by that harness is reported as `CREW_DISPATCH: invalid config/crew-dispatch.json - ...`; missing `jq` is reported through the normal `MISSING: jq` install-consent flow.
 If no dispatch rule fits, firstmate uses the dispatch profile `default` when present, then falls back to `config/crew-harness`.
 Because the spawn backstop is gated by file presence, any fallback path after a missing match, validation error, or missing `jq` still passes a resolved harness explicitly until the file is fixed or removed.
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.

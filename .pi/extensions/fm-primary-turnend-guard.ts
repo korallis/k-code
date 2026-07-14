@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 let guardFollowupActive = false;
+const ephemeralSession = process.argv.includes("--no-session");
 
 type LockOwnership = "owned" | "missing" | "other";
 
@@ -100,6 +101,8 @@ function runCdCheck(command: string): Promise<{ code: number; stderr: string }> 
 }
 
 export default function (pi: ExtensionAPI) {
+  if (ephemeralSession) return;
+
   pi.on?.("session_start", () => {
     markLoaded();
   });

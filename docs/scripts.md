@@ -6,6 +6,9 @@ If you have changed away from the firstmate home in an interactive shell, invoke
 
 | Script                   | Purpose                                                                              |
 | ------------------------ | ------------------------------------------------------------------------------------ |
+| `kcode-integrity.sh`     | Validate k-code packaging boundaries, docs, skills, JSON, secrets, and PHI            |
+| `kcode-skills.sh`        | Inventory, verify, compare, restore, and verify k-code's captured skill setup         |
+| `kcode-sync.sh`          | Mirror the live Firstmate home into k-code while preserving fork-owned surfaces       |
 | `fm-session-start.sh`    | Compose lock, bootstrap, and wake drain into the single ordered session-start digest |
 | `fm-bootstrap.sh`        | Detect toolchain and fleet problems, run the locked session-start sweeps, and install approved tools |
 | `fm-fleet-sync.sh`       | Refresh project clones with safe fast-forwards, self-heals, `STUCK:` reports, branch pruning, and bounded recovery from an orphaned `.git/packed-refs.lock` |
@@ -25,7 +28,7 @@ If you have changed away from the firstmate home in an interactive shell, invoke
 | `fm-supervision-instructions.sh` | Render the session-start primary-harness supervision block or the one-line repair instruction |
 | `fm-home-seed.sh`        | Transactionally provision a secondmate home and maintain `data/secondmates.md`       |
 | `fm-spawn.sh`            | Spawn crewmates, scouts, `id=repo` batches, and secondmates on the resolved harness and runtime backend |
-| `fm-dispatch-select.sh`  | Resolve a matched crew-dispatch rule to one concrete profile, owning `quota-balanced` selection |
+| `fm-dispatch-select.sh`  | Resolve matched crew-dispatch selectors, including quota-balanced choice and guarded all-profile fan-out |
 | `fm-backend.sh`          | Runtime-backend selection, meta helpers, selector resolution, and operation dispatch |
 | `fm-backend-hometag-lib.sh` | Shared per-installation home-tag derivation for zellij tab and cmux workspace titles |
 | `fm-composer-lib.sh`     | Single fleet-wide owner of composer-content classification for all backends          |

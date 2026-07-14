@@ -27,6 +27,7 @@ const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(exte
 
 let child: any = null;
 let seq = 0;
+const ephemeralSession = process.argv.includes("--no-session");
 
 function parentPid(pid: string): string {
   const result = spawnSync("ps", ["-o", "ppid=", "-p", pid], { encoding: "utf8" });
@@ -86,6 +87,8 @@ function failureLine(stdout: string, stderr: string, code: number | null): strin
 }
 
 export default function (pi: ExtensionAPI) {
+  if (ephemeralSession) return;
+
   function stopArm(): void {
     if (child) child.kill("SIGTERM");
     child = null;

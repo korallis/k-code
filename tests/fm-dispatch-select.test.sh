@@ -39,6 +39,16 @@ JSON
 }
 
 profiles='[{"harness":"claude","model":"claude-sonnet-5","effort":"high"},{"harness":"codex","model":"gpt-5.5","effort":"high"}]'
+fanout_rule='{"select":"all","use":[{"harness":"pi","model":"xai-auth/grok-4.5","effort":"high"},{"harness":"pi","model":"openai-codex/gpt-5.6-sol","effort":"high"},{"harness":"pi","model":"claude-bridge/claude-fable-5","effort":"max","quota":{"provider":"claude","window":"model:fable","percentRemainingAbove":0,"fallback":{"harness":"pi","model":"claude-bridge/claude-opus-4-8","effort":"max"}}}]}'
+fanout_fable='[{"harness":"pi","model":"xai-auth/grok-4.5","effort":"high"},{"harness":"pi","model":"openai-codex/gpt-5.6-sol","effort":"high"},{"harness":"pi","model":"claude-bridge/claude-fable-5","effort":"max"}]'
+fanout_opus='[{"harness":"pi","model":"xai-auth/grok-4.5","effort":"high"},{"harness":"pi","model":"openai-codex/gpt-5.6-sol","effort":"high"},{"harness":"pi","model":"claude-bridge/claude-opus-4-8","effort":"max"}]'
+
+write_fable_quota() {
+  local file=$1 status=$2 percent=$3
+  cat > "$file" <<JSON
+{"providers":[{"provider":"claude","state":{"status":"$status"},"windows":[{"id":"model:fable","kind":"model","percentRemaining":$percent}]}]}
+JSON
+}
 
 test_higher_min_vendor_wins() {
   local quota out
@@ -150,6 +160,76 @@ JSON
   pass "absent or unusable vendors resolve to an available candidate or the first fallback"
 }
 
+test_all_guard_uses_fable_when_fresh_quota_remains() {
+  local quota out
+  quota="$TMP_ROOT/fable-available.json"
+  write_fable_quota "$quota" fresh 1
+  out=$("$ROOT/bin/fm-dispatch-select.sh" --quota-json "$quota" "$fanout_rule")
+  [ "$out" = "$fanout_fable" ] || fail "fresh positive Fable quota should retain Fable without changing siblings, got: $out"
+  pass "all fan-out retains Fable only when its fresh model quota remains"
+}
+
+test_all_guard_falls_back_when_fable_is_exhausted() {
+  local quota out
+  quota="$TMP_ROOT/fable-exhausted.json"
+  write_fable_quota "$quota" fresh 0
+  out=$("$ROOT/bin/fm-dispatch-select.sh" --quota-json "$quota" "$fanout_rule")
+  [ "$out" = "$fanout_opus" ] || fail "exhausted Fable quota should select Opus without changing siblings, got: $out"
+  pass "all fan-out selects the declared fallback when Fable quota is exhausted"
+}
+
+test_all_guard_falls_back_when_fable_quota_is_missing() {
+  local quota out
+  quota="$TMP_ROOT/fable-missing.json"
+  printf '%s\n' '{"providers":[{"provider":"claude","state":{"status":"fresh"},"windows":[]}]}' > "$quota"
+  out=$("$ROOT/bin/fm-dispatch-select.sh" --quota-json "$quota" "$fanout_rule")
+  [ "$out" = "$fanout_opus" ] || fail "missing Fable window should select Opus without changing siblings, got: $out"
+  pass "all fan-out selects the declared fallback when Fable quota is missing"
+}
+
+test_all_guard_falls_back_when_fable_quota_is_stale() {
+  local quota out
+  quota="$TMP_ROOT/fable-stale.json"
+  write_fable_quota "$quota" stale 100
+  out=$("$ROOT/bin/fm-dispatch-select.sh" --quota-json "$quota" "$fanout_rule")
+  [ "$out" = "$fanout_opus" ] || fail "stale Fable quota should select Opus without changing siblings, got: $out"
+  pass "all fan-out selects the declared fallback when Fable quota is stale"
+}
+
+test_all_guard_falls_back_when_quota_is_unparseable() {
+  local quota out err
+  quota="$TMP_ROOT/fable-unparseable.json"
+  printf '%s\n' 'not-json' > "$quota"
+  out=$("$ROOT/bin/fm-dispatch-select.sh" --quota-json "$quota" "$fanout_rule" 2>"$TMP_ROOT/fable-unparseable.err")
+  err=$(cat "$TMP_ROOT/fable-unparseable.err")
+  [ "$out" = "$fanout_opus" ] || fail "unparseable quota should select Opus without changing siblings, got: $out"
+  assert_contains "$err" "unparseable JSON" "unparseable all-fan-out quota fallback should be logged"
+  pass "all fan-out selects the declared fallback when quota is unparseable"
+}
+
+test_all_guard_falls_back_for_malformed_nested_quota() {
+  local quota case_name fixture out err
+  quota="$TMP_ROOT/fable-malformed.json"
+  while IFS='|' read -r case_name fixture; do
+    printf '%s\n' "$fixture" > "$quota"
+    out=$("$ROOT/bin/fm-dispatch-select.sh" --quota-json "$quota" "$fanout_rule" 2>"$TMP_ROOT/fable-malformed.err")
+    err=$(cat "$TMP_ROOT/fable-malformed.err")
+    [ "$out" = "$fanout_opus" ] \
+      || fail "$case_name quota should preserve the complete fallback fan-out, got: $out"
+    assert_contains "$err" "malformed quota schema" \
+      "$case_name quota fallback should identify the malformed nested schema"
+  done <<'CASES'
+provider is not an object|{"providers":["claude"]}
+provider name is not a string|{"providers":[{"provider":7,"state":{"status":"fresh"},"windows":[]}]}
+provider state is not an object|{"providers":[{"provider":"claude","state":"fresh","windows":[]}]}
+provider windows is not an array|{"providers":[{"provider":"claude","state":{"status":"fresh"},"windows":{}}]}
+window is not an object|{"providers":[{"provider":"claude","state":{"status":"fresh"},"windows":[7]}]}
+window id is not a string|{"providers":[{"provider":"claude","state":{"status":"fresh"},"windows":[{"id":7,"percentRemaining":1}]}]}
+window percentage is not numeric|{"providers":[{"provider":"claude","state":{"status":"fresh"},"windows":[{"id":"model:fable","percentRemaining":"1"}]}]}
+CASES
+  pass "all fan-out rejects malformed nested quota without dropping profiles"
+}
+
 test_backward_compatible_first_selection() {
   local fakebin marker out single array_rule
   fakebin=$(fm_fakebin "$TMP_ROOT/no-call")
@@ -181,6 +261,12 @@ test_quota_error_falls_back_to_first
 test_bad_quota_json_falls_back_to_first
 test_stale_with_cache_needs_clear_margin_to_beat_fresh
 test_vendor_absent_or_unusable_falls_back_conservatively
+test_all_guard_uses_fable_when_fresh_quota_remains
+test_all_guard_falls_back_when_fable_is_exhausted
+test_all_guard_falls_back_when_fable_quota_is_missing
+test_all_guard_falls_back_when_fable_quota_is_stale
+test_all_guard_falls_back_when_quota_is_unparseable
+test_all_guard_falls_back_for_malformed_nested_quota
 test_backward_compatible_first_selection
 
 echo "# all fm-dispatch-select tests passed"

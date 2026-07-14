@@ -1,8 +1,0 @@
-[submodule "projects/k-zero"]
-	path = projects/k-zero
-	url = git@github.com:korallis/k-zero.git
-	branch = main
-[submodule "projects/service-referral"]
-	path = projects/service-referral
-	url = git@github.com:korallis/service-referral.git
-	branch = main

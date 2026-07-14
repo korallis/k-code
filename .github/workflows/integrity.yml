@@ -1,5 +1,5 @@
-# Fork integrity checks for korallis/k-code (synchronized Firstmate operating-home fork).
-# Intentionally does NOT run upstream firstmate unit tests / no-mistakes gates.
+# Focused integrity checks for the synchronized k-code operating-home fork.
+# This workflow intentionally does not restore upstream Firstmate development gates.
 name: Integrity
 
 on:
@@ -13,114 +13,29 @@ permissions:
 
 jobs:
   integrity:
-    name: Markdown · links · secrets
+    name: Boundaries · skills · links · secrets
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: false
 
-      - name: Secret pattern scan (tracked tree)
+      - name: Install pinned ShellCheck
+        run: |
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+
+      - run: bin/fm-lint.sh
+
+      - name: Operating-home integrity
+        run: bin/kcode-integrity.sh
+
+      - name: Skill snapshot, Pi package, and sync regressions
         run: |
           set -euo pipefail
-          # High-entropy / real credential shapes only. Test fixtures use
-          # FMX_PAIRING_TOKEN=tok-* and docs show empty assignment examples.
-          patterns=(
-            'ghp_[A-Za-z0-9]{36,}'
-            'gho_[A-Za-z0-9]{36,}'
-            'github_pat_[A-Za-z0-9_]{20,}'
-            'sk-[A-Za-z0-9]{32,}'
-            'xox[baprs]-[A-Za-z0-9-]{20,}'
-            'AKIA[0-9A-Z]{16}'
-            'BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY'
-          )
-          fail=0
-          for p in "${patterns[@]}"; do
-            if grep -RInE --exclude-dir=.git --exclude-dir=projects --exclude-dir=node_modules \
-                --exclude='*.jpg' --exclude='*.png' --exclude='*.bundle' -e "$p" . ; then
-              echo "::error::Secret pattern matched: $p"
-              fail=1
-            fi
-          done
-          # Forbidden runtime / secret filenames must not be tracked
-          if git ls-files | grep -E '(^|/)\.env$|\.key$|credential|cmux-socket-password|^config/x-mode\.env$' ; then
-            echo "::error::Forbidden secret/runtime path is tracked"
-            fail=1
-          fi
-          if git ls-files | grep -E '^(state/|\.no-mistakes/|\.lavish/)' ; then
-            echo "::error::Volatile runtime path is tracked"
-            fail=1
-          fi
-          # Real pairing tokens look like long non-tok values assigned in non-test files
-          if git grep -nE 'FMX_PAIRING_TOKEN=[A-Za-z0-9_-]{20,}' -- ':!tests/**' ':!docs/**' ; then
-            echo "::error::Possible real FMX_PAIRING_TOKEN outside tests/docs"
-            fail=1
-          fi
-          exit "$fail"
-
-      - name: Required surfaces present
-        run: |
-          set -euo pipefail
-          for f in README.md AGENTS.md LICENSE bin/kcode-sync.sh config/crew-dispatch.json .tasks.toml .gitmodules; do
-            test -e "$f" || { echo "::error::missing $f"; exit 1; }
-          done
-          test -f assets/kcode/hero-banner.jpg
-          test -f assets/kcode/fleet-architecture.jpg
-          test -f assets/kcode/security-boundary.jpg
-          test -f assets/kcode/PROVENANCE.md
-          test -f docs/assets/hero-banner.jpg
-          grep -q 'projects/k-zero' .gitmodules
-          grep -q 'projects/service-referral' .gitmodules
-          # Fork CI only — no upstream firstmate development gates
-          test -f .github/workflows/integrity.yml
-          test ! -f .github/workflows/ci.yml
-          test ! -f .github/workflows/no-mistakes-required.yml
-
-      - name: Markdown relative-link check (k-code-owned surfaces)
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import re, sys
-          from pathlib import Path
-          root = Path(".")
-          md_files = [Path("README.md"), Path("assets/kcode/PROVENANCE.md")]
-          md_files = [p for p in md_files if p.exists()]
-          link_re = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
-          img_re = re.compile(r'<img[^>]+src="([^"]+)"')
-          md_img_re = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
-          missing = []
-          checked = 0
-          for md in md_files:
-              text = md.read_text(encoding="utf-8", errors="replace")
-              targets = []
-              for m in link_re.finditer(text):
-                  targets.append(m.group(2).strip())
-              for m in md_img_re.finditer(text):
-                  targets.append(m.group(2).strip())
-              for m in img_re.finditer(text):
-                  targets.append(m.group(1).strip())
-              for target in targets:
-                  if target.startswith(("http://", "https://", "mailto:", "#")):
-                      continue
-                  path_part = target.split()[0].split("#")[0]
-                  if not path_part:
-                      continue
-                  resolved = (md.parent / path_part).resolve()
-                  checked += 1
-                  try:
-                      resolved.relative_to(root.resolve())
-                  except ValueError:
-                      missing.append(f"{md}: escapes root -> {target}")
-                      continue
-                  if not resolved.exists():
-                      missing.append(f"{md}: missing {target}")
-          print(f"checked {checked} relative links across {len(md_files)} k-code-owned files")
-          if missing:
-              print("\n".join(missing))
-              sys.exit(1)
-          print("relative links ok")
-          PY
-
-      - name: crew-dispatch.json is valid JSON
-        run: python3 -c "import json; json.load(open('config/crew-dispatch.json')); print('crew-dispatch.json ok')"
+          tests/kcode-integrity.test.sh
+          tests/fm-bootstrap.test.sh
+          tests/fm-dispatch-select.test.sh
+          tests/kcode-validation-isolation.test.sh --static
+          tests/kcode-skills.test.sh
+          tests/kcode-pi-packages.test.sh
+          tests/kcode-sync.test.sh

@@ -1,52 +1,124 @@
 #!/usr/bin/env bash
-# kcode-sync.sh - mirror this firstmate operating home into the korallis/k-code fork.
+# kcode-sync.sh - mirror the live Firstmate operating home into korallis/k-code.
 #
-# k-code is the captain's Firstmate fork: a first-class public repo that carries
-# this fleet's adjustments, routing, durable memory, dashboard tooling, and
-# project submodules. It stays synchronized from the live operating home.
+# The sync mirrors Firstmate-derived tooling plus this fleet's tracked config and
+# memory, verifies that the separate skill snapshot still covers every active
+# skill root, removes all project paths from the destination index, and commits
+# and pushes only when the result changed.
 #
-# Re-mirrors firstmate's working tree plus this fleet's config/ and data/,
-# refreshes the project submodule pointers, commits, and pushes to k-code.
-# Secrets are never copied (keys live in 1Password; env files are pulled at
-# task time). Volatile runtime (state/, .no-mistakes/, .lavish/) is excluded.
+# Product checkouts, volatile runtime, and secrets are never copied.
+# Existing ignored product checkouts in the destination are never deleted.
 #
-# k-code-owned surfaces (not overwritten by sync):
-#   README.md, .gitignore, .github/workflows/, assets/kcode/, docs/assets/
+# k-code-owned surfaces are not overwritten:
+#   README.md, CONTRIBUTING.md, docs/scripts.md, .gitattributes, .gitignore,
+#   .no-mistakes.yaml, .pi/settings.json, config/kcode-data-policy.tsv,
+#   .github/workflows/, assets/kcode/, docs/assets/, skill-snapshot/,
+#   bin/kcode-*.sh, and tests/kcode-*.test.sh.
+# The fork-owned dispatch contract is also protected as one exact surface set:
+#   AGENTS.md, CLAUDE.md, config/crew-dispatch.json,
+#   bin/fm-bootstrap.sh, bin/fm-dispatch-select.sh, docs/configuration.md,
+#   tests/fm-bootstrap.test.sh, and tests/fm-dispatch-select.test.sh.
 #
 # Usage: bin/kcode-sync.sh [<message>]
-#   Run from the firstmate home. Requires a checkout of korallis/k-code and gh auth.
-#   Set KCODE_DIR to point at your k-code checkout (default: ../k-code next to FM_HOME).
+#   Run from the live Firstmate home.
+#   KCODE_DIR defaults to ../k-code next to FM_HOME.
+#   KCODE_SKILL_USER_HOME overrides the user home examined for active skills.
+#   KCODE_SYNC_DRY_RUN=1 stages the result without committing or pushing.
 set -euo pipefail
 
 FM_HOME="${FM_HOME:-$(git rev-parse --show-toplevel)}"
 KCODE_DIR="${KCODE_DIR:-$(dirname "$FM_HOME")/k-code}"
+SKILL_USER_HOME="${KCODE_SKILL_USER_HOME:-$HOME}"
+DRY_RUN="${KCODE_SYNC_DRY_RUN:-0}"
 MSG="${1:-sync: mirror firstmate operating home $(date -u +%Y-%m-%dT%H:%MZ)}"
+DATA_POLICY="$KCODE_DIR/config/kcode-data-policy.tsv"
+
+[ -f "$DATA_POLICY" ] || {
+  printf 'kcode-sync: missing data policy at %s\n' "$DATA_POLICY" >&2
+  exit 1
+}
+casefold_glob() {
+  local input=$1 output='' character upper index
+  for ((index = 0; index < ${#input}; index++)); do
+    character=${input:index:1}
+    case "$character" in
+      [a-z])
+        upper=$(printf '%s' "$character" | LC_ALL=C tr '[:lower:]' '[:upper:]')
+        output="${output}[$character$upper]"
+        ;;
+      *) output="${output}${character}" ;;
+    esac
+  done
+  printf '%s' "$output"
+}
+
+data_directories=()
+data_extensions=()
+while IFS=$'\t' read -r kind value; do
+  case "$kind" in
+    directory) data_directories+=("$value") ;;
+    extension) data_extensions+=("$value") ;;
+    \#*|'') ;;
+    *) printf 'kcode-sync: invalid data policy row: %s\t%s\n' "$kind" "$value" >&2; exit 1 ;;
+  esac
+done < "$DATA_POLICY"
+data_excludes=()
+for value in "${data_directories[@]}"; do
+  data_excludes+=("--exclude=data/**/$(casefold_glob "$value")/")
+done
+for value in "${data_extensions[@]}"; do
+  data_excludes+=("--exclude=data/**/*.$(casefold_glob "$value")")
+done
 
 [ -d "$KCODE_DIR/.git" ] || [ -f "$KCODE_DIR/.git" ] || {
-  echo "kcode-sync: no k-code checkout at $KCODE_DIR (set KCODE_DIR)" >&2
+  printf 'kcode-sync: no k-code checkout at %s (set KCODE_DIR)\n' "$KCODE_DIR" >&2
+  exit 1
+}
+[ -x "$KCODE_DIR/bin/kcode-skills.sh" ] || {
+  printf 'kcode-sync: missing executable k-code skill manager at %s\n' \
+    "$KCODE_DIR/bin/kcode-skills.sh" >&2
   exit 1
 }
 
-# 1. Mirror firstmate's WORKING TREE (not just committed HEAD) so uncommitted
-# tooling and in-progress changes sync too. --delete prunes files removed from
-# firstmate, while k-code-owned presentation/CI paths are excluded so they
-# survive. Submodule clones, volatile runtime, and secrets are excluded;
-# k-code's .gitignore is the second gate.
-# Note: exclude both .git/ and .git (worktrees use a gitfile) so --delete never
-# removes the checkout's git link.
+# Mirror the live working tree, not only committed HEAD.
+# Excluding projects/ prevents source clones from entering the destination, while
+# the explicit index cleanup below removes any stale tracked destination paths.
+# Exclude both .git/ and .git because linked worktrees use a gitfile.
 rsync -a --delete \
   --exclude='.git/' \
   --exclude='.git' \
   --exclude='.gitmodules' \
+  --exclude='.gitattributes' \
   --exclude='.gitignore' \
+  --exclude='.no-mistakes.yaml' \
+  --exclude='.pi/settings.json' \
+  --exclude='config/kcode-data-policy.tsv' \
+  --exclude='config/crew-dispatch.json' \
   --exclude='README.md' \
+  --exclude='AGENTS.md' \
+  --exclude='CLAUDE.md' \
+  --exclude='CONTRIBUTING.md' \
+  --exclude='docs/configuration.md' \
+  --exclude='docs/scripts.md' \
   --exclude='.github/workflows/' \
   --exclude='assets/kcode/' \
   --exclude='docs/assets/' \
+  --exclude='skill-snapshot/' \
+  --exclude='bin/kcode-*.sh' \
+  --exclude='bin/fm-bootstrap.sh' \
+  --exclude='bin/fm-dispatch-select.sh' \
+  --exclude='tests/kcode-*.test.sh' \
+  --exclude='tests/fm-bootstrap.test.sh' \
+  --exclude='tests/fm-dispatch-select.test.sh' \
   --exclude='projects/' \
   --exclude='state/' \
   --exclude='.no-mistakes/' \
   --exclude='.lavish/' \
+  --exclude='.pi/npm/' \
+  --exclude='.pi/git/' \
+  --exclude='.pi/claude-bridge.json' \
+  --exclude='.pi/cc-cli-logs/' \
+  --exclude='.pi/sessions/' \
   --exclude='node_modules/' \
   --exclude='.DS_Store' \
   --exclude='.env' \
@@ -54,13 +126,23 @@ rsync -a --delete \
   --exclude='*credential*' \
   --exclude='config/x-mode.env' \
   --exclude='config/cmux-socket-password' \
-  --exclude='data/kcode-rebuild-g7/' \
+  "${data_excludes[@]}" \
   "$FM_HOME"/ "$KCODE_DIR"/
 
-rm -f "$KCODE_DIR/.github/WORKFLOWS-NOTE.md" 2>/dev/null || true
+if [ -d "$KCODE_DIR/data" ]; then
+  for value in "${data_extensions[@]}"; do
+    find "$KCODE_DIR/data" -type f -iname "*.$value" -delete
+  done
+  for value in "${data_directories[@]}"; do
+    find "$KCODE_DIR/data" -depth -type d -iname "$value" -exec rm -rf {} +
+  done
+fi
+rm -f "$KCODE_DIR/.github/WORKFLOWS-NOTE.md"
 
-# 2. Restore the k-code-specific .gitignore (firstmate's would re-hide config/data).
+# k-code tracks fleet config and memory, but never local products or runtime
+# credentials. This heredoc is the single owner of the fork's ignore contract.
 cat > "$KCODE_DIR/.gitignore" <<'GI'
+projects/
 state/
 .no-mistakes/
 .lavish/
@@ -69,23 +151,66 @@ state/
 .env
 *.key
 *credential*
+!skill-snapshot/vendor/**
 config/x-mode.env
 config/cmux-socket-password
+.pi/npm/
+.pi/git/
+.pi/claude-bridge.json
+.pi/cc-cli-logs/
+.pi/sessions/
 .DS_Store
 __pycache__/
 *.pyc
 *.log
 GI
+for value in "${data_extensions[@]}"; do
+  printf 'data/**/*.%s\n' "$(casefold_glob "$value")" >> "$KCODE_DIR/.gitignore"
+done
+for value in "${data_directories[@]}"; do
+  printf 'data/**/%s/\n' "$(casefold_glob "$value")" >> "$KCODE_DIR/.gitignore"
+done
 
-# 3. Advance project submodule pointers to their latest pushed commits.
-git -C "$KCODE_DIR" submodule update --remote --quiet 2>/dev/null || true
+# Excluding a source path does not remove an old destination index entry.
+# Remove only index records so an ignored local product checkout remains intact.
+rm -f "$KCODE_DIR/.gitmodules"
+tracked_projects=$(git -C "$KCODE_DIR" ls-files -- projects)
+if [ -n "$tracked_projects" ]; then
+  git -C "$KCODE_DIR" rm -r --cached --ignore-unmatch -- projects >/dev/null
+fi
 
-# 4. Commit and push if anything changed.
+# The snapshot is k-code-owned and deduplicated, so sync validates it against
+# both the mirrored project roots and every active user/harness skill root.
+# Any new, removed, changed, or unlicensed skill blocks a partial sync instead
+# of being silently omitted or copied without review.
+"$KCODE_DIR/bin/kcode-skills.sh" verify
+"$KCODE_DIR/bin/kcode-skills.sh" verify-live \
+  --from-home "$FM_HOME" --user-home "$SKILL_USER_HOME"
+
 git -C "$KCODE_DIR" add -A
+"$KCODE_DIR/bin/kcode-integrity.sh"
+
+tracked_projects=$(git -C "$KCODE_DIR" ls-files -- projects)
+if [ -n "$tracked_projects" ]; then
+  printf 'kcode-sync: refusing to continue with tracked projects/ entries\n' >&2
+  exit 1
+fi
+if git -C "$KCODE_DIR" ls-files --error-unmatch .gitmodules >/dev/null 2>&1; then
+  printf 'kcode-sync: refusing to continue with tracked .gitmodules metadata\n' >&2
+  exit 1
+fi
+gitlinks=$(git -C "$KCODE_DIR" ls-files -s | awk '$1 == "160000" {print $4}')
+if [ -n "$gitlinks" ]; then
+  printf 'kcode-sync: refusing to continue with tracked gitlinks:\n%s\n' "$gitlinks" >&2
+  exit 1
+fi
+
 if git -C "$KCODE_DIR" diff --cached --quiet; then
-  echo "kcode-sync: nothing to sync."
+  printf 'kcode-sync: nothing to sync.\n'
+elif [ "$DRY_RUN" = 1 ]; then
+  printf 'kcode-sync: dry run staged changes without commit or push.\n'
 else
   git -C "$KCODE_DIR" commit -q -m "$MSG"
   git -C "$KCODE_DIR" push -q
-  echo "kcode-sync: pushed to k-code."
+  printf 'kcode-sync: pushed to k-code.\n'
 fi

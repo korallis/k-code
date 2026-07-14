@@ -489,9 +489,11 @@ crew_dispatch_validate() {
       elif ($u | type) == "object" then [$u]
       else []
       end;
+    def dispatch_profiles:
+      ([(.rules // [])[]? | use_profiles(.use?)[]? | ., (.quota?.fallback? // empty)]
+        + (if (.default? | type) == "object" then [.default] else [] end));
     def bad_efforts:
-      ([(.rules // [])[]? | use_profiles(.use?)[]? | {h: .harness, e: .effort}]
-        + (if (.default? | type) == "object" then [{h: .default.harness, e: .default.effort}] else [] end))
+      (dispatch_profiles | map({h: .harness, e: .effort}))
       | map(select(.e != null))
       | map(select((.h | type) == "string" and verified(.h)))
       | map(select(. as $p | effort_ok($p.h; $p.e) | not))
@@ -506,12 +508,21 @@ crew_dispatch_validate() {
     elif [(.rules // [])[]? | use_profiles(.use?)[]? | select(type != "object")] | length > 0 then "each use profile must be an object"
     elif [(.rules // [])[]? | use_profiles(.use?)[]? | select((.harness? | type) != "string" or (.harness | length) == 0)] | length > 0 then "each use profile needs harness"
     elif [(.rules // [])[]? | select(has("select") and ((.select? | type) != "string" or (.select | length) == 0))] | length > 0 then "select must be a non-empty string"
-    elif [(.rules // [])[]? | .select? // empty | select(. != "quota-balanced")] | length > 0 then
-      "unknown select: " + ([ (.rules // [])[]? | .select? // empty | select(. != "quota-balanced") ] | unique | join(", "))
+    elif [(.rules // [])[]? | select(.select? == "all" and (.use | type) != "array")] | length > 0 then "select all requires an array use"
+    elif [(.rules // [])[]? | select(.select? != "all") | use_profiles(.use?)[]? | select(.quota? != null)] | length > 0 then "quota guards require select all"
+    elif [(.rules // [])[]? | select(.select? == "all") | use_profiles(.use?)[]? | select(has("quota") and (.quota | type) != "object")] | length > 0 then "profile quota must be an object"
+    elif [(.rules // [])[]? | select(.select? == "all") | use_profiles(.use?)[]? | select(.quota? != null) | select((.quota.provider? | type) != "string" or (.quota.provider | length) == 0)] | length > 0 then "profile quota needs provider"
+    elif [(.rules // [])[]? | select(.select? == "all") | use_profiles(.use?)[]? | select(.quota? != null) | select((.quota.window? | type) != "string" or (.quota.window | length) == 0)] | length > 0 then "profile quota needs window"
+    elif [(.rules // [])[]? | select(.select? == "all") | use_profiles(.use?)[]? | select(.quota? != null) | select((.quota.percentRemainingAbove? | type) != "number")] | length > 0 then "profile quota needs numeric percentRemainingAbove"
+    elif [(.rules // [])[]? | select(.select? == "all") | use_profiles(.use?)[]? | select(.quota? != null) | select((.quota.fallback? | type) != "object")] | length > 0 then "profile quota needs fallback profile"
+    elif [(.rules // [])[]? | select(.select? == "all") | use_profiles(.use?)[]? | select(.quota? != null) | select((.quota.fallback.harness? | type) != "string" or (.quota.fallback.harness | length) == 0)] | length > 0 then "profile quota fallback needs harness"
+    elif [(.rules // [])[]? | select(.select? == "all") | use_profiles(.use?)[]? | select(.quota?.fallback?.quota? != null)] | length > 0 then "profile quota fallback cannot be guarded"
+    elif [(.rules // [])[]? | .select? // empty | select(. != "quota-balanced" and . != "all")] | length > 0 then
+      "unknown select: " + ([ (.rules // [])[]? | .select? // empty | select(. != "quota-balanced" and . != "all") ] | unique | join(", "))
     elif has("default") and (.default | type) != "object" then "default must be an object"
     elif has("default") and ((.default.harness? | type) != "string" or (.default.harness | length) == 0) then "default needs harness when present"
     else
-      ([(.rules // [])[]? | use_profiles(.use?)[]?.harness] + [.default?.harness?]
+      (dispatch_profiles | map(.harness?)
         | map(select(. != null))
         | map(select(. as $h | verified($h) | not))
         | unique) as $bad_harnesses
@@ -532,11 +543,18 @@ crew_dispatch_validate() {
          elif ($p.effort? != null) then "/default"
          else "" end)
       + (if ($p.effort? != null) then "/" + ($p.effort | tostring) else "" end);
+    def guarded_profile($p):
+      profile($p)
+      + (if ($p.quota? | type) == "object" then
+          "{quota:" + ($p.quota.provider | tostring) + "/" + ($p.quota.window | tostring)
+          + ">" + ($p.quota.percentRemainingAbove | tostring)
+          + " fallback:" + profile($p.quota.fallback) + "}"
+        else "" end);
     def use_label($r):
       if ($r.use | type) == "array" then
         ((if ($r.select? != null) then ($r.select | tostring) else "first" end)
-          + "[" + ([$r.use[] | profile(.)] | join(", ")) + "]")
-      else profile($r.use)
+          + "[" + ([$r.use[] | guarded_profile(.)] | join(", ")) + "]")
+      else guarded_profile($r.use)
       end;
     (["CREW_DISPATCH: active config/crew-dispatch.json"]
       + [(.rules // [])[]? | "  rule: " + (.when | tostring) + " -> " + use_label(.)]

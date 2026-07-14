@@ -1,0 +1,8 @@
+# source_id	kind	repository	revision	license	path	notes
+firstmate-internal	tracked	https://github.com/kunchenguid/firstmate	ad9f3a71894a96f0af5b9e0fe238acda855d6478	MIT	.agents/skills	Twelve live-home internal skills mirrored from the active Firstmate checkout.
+firstmate-public	tracked	https://github.com/kunchenguid/firstmate	ad9f3a71894a96f0af5b9e0fe238acda855d6478	MIT	skills	The standalone public stow skill mirrored from the active Firstmate checkout.
+no-mistakes	vendored	https://github.com/kunchenguid/no-mistakes	78e4dcb234274199717acafa90abca5cf7013993	MIT	skill-snapshot/vendor/no-mistakes	The installed generic and Claude copies matched this source commit byte for byte.
+emilkowalski-skills	vendored	https://github.com/emilkowalski/skills	7bb7061b5cf7de15ea1aeaf00fbd9e6592a20fce	MIT	skill-snapshot/vendor/emilkowalski-skills	Five installed design and animation skills matched this source commit byte for byte.
+rayfernando-skills	vendored	https://github.com/RayFernando1337/rayfernando-skills	cf54b5152de994fff33a39d14f92008856f45df2	Apache-2.0	skill-snapshot/vendor/rayfernando-skills	The installed bootstrap-ios and running-bug-review-board trees matched this source commit byte for byte.
+threejs-game-skills	vendored	https://github.com/majidmanzarpour/threejs-game-skills	8919acca095be36ea054c866a79997fca90e8b22	MIT	skill-snapshot/vendor/threejs-game-skills	Nine installed Three.js skills matched this source commit byte for byte.
+vercel-plugin	vendored	https://github.com/vercel/vercel-plugin	3b6cbeb8a9766f8d039d8c1377a68c3d0953c9c6	Apache-2.0	skill-snapshot/vendor/vercel-plugin	The 28 active skills from Claude plugin version 0.44.0 matched this source commit byte for byte.
