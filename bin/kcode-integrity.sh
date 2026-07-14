@@ -245,7 +245,14 @@ if Path("config/secondmate-harness").read_text(encoding="utf-8") != (
 profiles = []
 for rule in dispatch.get("rules", []):
     use = rule.get("use", [])
-    profiles.extend(use if isinstance(use, list) else [use])
+    rule_profiles = use if isinstance(use, list) else [use]
+    profiles.extend(rule_profiles)
+    profiles.extend(
+        profile["quota"]["fallback"]
+        for profile in rule_profiles
+        if isinstance(profile.get("quota"), dict)
+        and isinstance(profile["quota"].get("fallback"), dict)
+    )
 profiles.append(dispatch.get("default", {}))
 if not profiles or any(profile.get("harness") != "pi" for profile in profiles):
     raise SystemExit("kcode-integrity: every dispatch profile must stay on Pi")
@@ -257,6 +264,16 @@ expected_third = {
     "harness": "pi",
     "model": "claude-bridge/claude-fable-5",
     "effort": "max",
+    "quota": {
+        "provider": "claude",
+        "window": "model:fable",
+        "percentRemainingAbove": 0,
+        "fallback": {
+            "harness": "pi",
+            "model": "claude-bridge/claude-opus-4-8",
+            "effort": "max",
+        },
+    },
 }
 research_use = research_rules[0].get("use", []) if len(research_rules) == 1 else []
 if (
@@ -267,8 +284,8 @@ if (
 ):
     raise SystemExit("kcode-integrity: research triad must fan out all three Pi profiles")
 why = research_rules[0].get("why", "")
-if "claude-bridge/claude-opus-4-8" not in why or "never the standalone Claude harness" not in why:
-    raise SystemExit("kcode-integrity: research triad must document the Pi bridge Opus fallback")
+if "never the standalone Claude harness" not in why:
+    raise SystemExit("kcode-integrity: research triad must document its Pi-only fallback boundary")
 
 required = ["npm:pi-xai-oauth@1.3.3", "npm:pi-claude-bridge@0.6.2"]
 packages = package_settings.get("packages")

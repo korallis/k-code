@@ -242,7 +242,7 @@ The core safety rules are unchanged from upstream Firstmate: Firstmate delegates
 
 [`config/crew-dispatch.json`](config/crew-dispatch.json) stores natural-language dispatch rules that select a harness, model, and effort profile for each task shape.
 
-This fleet keeps every launch on Pi: [`config/crew-harness`](config/crew-harness) pins the general harness to `pi`, [`config/secondmate-harness`](config/secondmate-harness) routes secondmates through `claude-bridge/claude-fable-5` at max effort, and the research triad's third voice uses the same Pi bridge route with a Pi `claude-bridge/claude-opus-4-8` fallback rather than standalone Claude.
+This fleet keeps every launch on Pi: [`config/crew-harness`](config/crew-harness) pins the general harness to `pi`, [`config/secondmate-harness`](config/secondmate-harness) routes secondmates through `claude-bridge/claude-fable-5` at max effort, and the research triad's executable quota guard uses that Fable route only while its fresh plan window remains above zero, otherwise selecting Pi `claude-bridge/claude-opus-4-8` rather than standalone Claude.
 The JSON file is the authoritative policy, while [the configuration guide](docs/configuration.md) owns its schema and behavior.
 
 ### Durable memory

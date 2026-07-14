@@ -16,11 +16,21 @@
         {
           "harness": "pi",
           "model": "claude-bridge/claude-fable-5",
-          "effort": "max"
+          "effort": "max",
+          "quota": {
+            "provider": "claude",
+            "window": "model:fable",
+            "percentRemainingAbove": 0,
+            "fallback": {
+              "harness": "pi",
+              "model": "claude-bridge/claude-opus-4-8",
+              "effort": "max"
+            }
+          }
         }
       ],
       "select": "all",
-      "why": "TRIAD CONVERGE, not either/or: the captain wants ALL THREE profiles spawned as coordinating co-draft scouts for every research or planning task - Grok 4.5 through Pi (high), GPT-5.6 Sol through Pi (high), and Fable 5 through Pi's claude-bridge provider (max) each draft, cross-review the others' drafts, and firstmate converges them into one final synthesis. THIRD-VOICE QUOTA SWAP: use the declared claude-bridge/claude-fable-5 profile whenever Fable 5 is within plan limits - check quota-axi's claude `model:fable` window; if unavailable, keep harness Pi and fall back to claude-bridge/claude-opus-4-8 at max effort, never the standalone Claude harness. MANDATORY TOOLS: every research and planning scout MUST use the exa and ref MCP servers for sources. Every model route stays inside Pi; the explicit xai-auth/grok-4.5 route is smoke-tested and avoids the standalone Grok harness."
+      "why": "TRIAD CONVERGE, not either/or: spawn all three profiles for every research or planning task. Grok 4.5 through Pi (high), GPT-5.6 Sol through Pi (high), and the quota-resolved Pi Claude bridge voice (max) each draft, cross-review the others' drafts, and firstmate converges them into one final synthesis. The executable third-voice quota guard selects claude-bridge/claude-fable-5 only when quota-axi reports a fresh claude model:fable window above zero percent remaining; otherwise it selects claude-bridge/claude-opus-4-8, never the standalone Claude harness. MANDATORY TOOLS: every research and planning scout MUST use the exa and ref MCP servers for sources. Every model route stays inside Pi; the explicit xai-auth/grok-4.5 route is smoke-tested and avoids the standalone Grok harness."
     },
     {
       "when": "The task is UI implementation or UI polish: creating or changing user-facing screens, components, interaction design, responsive layout, accessibility presentation, visual design, HUD, or animation. Research and planning still use the triad rule instead.",

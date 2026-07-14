@@ -5,7 +5,15 @@
 #
 # Input may be a full rule object with `use` and optional `select`, a single
 # profile object, or an ordered array of profile objects.
-# Output is one compact JSON profile object on stdout.
+# Output is one compact JSON profile object on stdout, except `select: all`,
+# which outputs an ordered compact JSON array after resolving quota guards.
+#
+# `all` profile quota guards are deterministic:
+#   - A guarded profile is used only when its named provider is fresh and its
+#     named window has percentRemaining strictly above percentRemainingAbove.
+#   - Exhausted, missing, stale, unparseable, or unavailable quota selects the
+#     guard's declared fallback profile; unguarded sibling profiles are unchanged.
+#   - Quota is read once for the complete fan-out.
 #
 # quota-balanced is deterministic, and this header is the single owner of its
 # contract:
@@ -120,11 +128,103 @@ first_profile() {
   '
 }
 
+clean_profiles() {
+  printf '%s\n' "$profiles_json" | jq -c '
+    def clean($p):
+      {harness: $p.harness}
+      + (if ($p.model? | type) == "string" then {model: $p.model} else {} end)
+      + (if ($p.effort? | type) == "string" then {effort: $p.effort} else {} end);
+    map(clean(.))
+  '
+}
+
+load_quota() {
+  if [ -n "$QUOTA_JSON_FILE" ]; then
+    if ! quota_json=$(cat "$QUOTA_JSON_FILE" 2>/dev/null); then
+      log "cannot read quota JSON"
+      return 1
+    fi
+  else
+    quota_cmd=${FM_DISPATCH_QUOTA_AXI:-quota-axi}
+    if ! command -v "$quota_cmd" >/dev/null 2>&1; then
+      log "quota-axi missing"
+      return 1
+    fi
+    quota_json=$("$quota_cmd" --json 2>/dev/null)
+    quota_status=$?
+    if [ "$quota_status" -ne 0 ]; then
+      log "quota-axi exited $quota_status"
+      return 1
+    fi
+  fi
+
+  if ! printf '%s\n' "$quota_json" | jq -e 'type == "object" and (.providers | type) == "array"' >/dev/null 2>&1; then
+    log "quota-axi returned unparseable JSON"
+    return 1
+  fi
+  return 0
+}
+
 select_strategy=$SELECT_OVERRIDE
 if [ -z "$select_strategy" ]; then
   select_strategy=$(printf '%s\n' "$SPEC_JSON" | jq -r '
     if type == "object" and has("use") and (.select? | type) == "string" then .select else "" end
   ' 2>/dev/null || true)
+fi
+
+if [ "$select_strategy" = all ]; then
+  if ! printf '%s\n' "$profiles_json" | jq -e '
+    all(.[];
+      (.quota? == null) or
+      ((.quota | type) == "object"
+        and (.quota.provider | type) == "string"
+        and (.quota.window | type) == "string"
+        and (.quota.percentRemainingAbove | type) == "number"
+        and (.quota.fallback | type) == "object"
+        and (.quota.fallback.harness | type) == "string"
+        and (.quota.fallback.quota? == null)))
+  ' >/dev/null 2>&1; then
+    echo "error: malformed select all quota guard" >&2
+    exit 2
+  fi
+  if ! printf '%s\n' "$profiles_json" | jq -e 'any(.[]; .quota? != null)' >/dev/null; then
+    clean_profiles
+    exit 0
+  fi
+  if ! load_quota; then
+    log "using declared fallbacks for guarded profiles"
+    printf '%s\n' "$profiles_json" | jq -c '
+      def clean($p):
+        {harness: $p.harness}
+        + (if ($p.model? | type) == "string" then {model: $p.model} else {} end)
+        + (if ($p.effort? | type) == "string" then {effort: $p.effort} else {} end);
+      map(if .quota? != null then clean(.quota.fallback) else clean(.) end)
+    '
+    exit 0
+  fi
+  printf '%s\n' "$quota_json" | jq -c --argjson profiles "$profiles_json" '
+    def clean($p):
+      {harness: $p.harness}
+      + (if ($p.model? | type) == "string" then {model: $p.model} else {} end)
+      + (if ($p.effort? | type) == "string" then {effort: $p.effort} else {} end);
+    def resolve($p):
+      if $p.quota? == null then clean($p)
+      else
+        ($p.quota) as $guard
+        | ([.providers[]? | select(.provider == $guard.provider)][0]) as $provider
+        | ([($provider.windows // [])[]? | select(.id == $guard.window)][0]) as $window
+        | if $provider != null
+            and (($provider.state.status? // "") == "fresh")
+            and $window != null
+            and (($window.percentRemaining? | type) == "number")
+            and ($window.percentRemaining > $guard.percentRemainingAbove)
+          then clean($p)
+          else clean($guard.fallback)
+          end
+      end;
+    . as $quota | [$profiles[] as $profile | $quota | resolve($profile)]
+  '
+  exit 0
 fi
 
 if [ "$select_strategy" != quota-balanced ]; then
@@ -135,30 +235,8 @@ if [ "$select_strategy" != quota-balanced ]; then
   exit 0
 fi
 
-if [ -n "$QUOTA_JSON_FILE" ]; then
-  if ! quota_json=$(cat "$QUOTA_JSON_FILE" 2>/dev/null); then
-    log "cannot read quota JSON; using first profile"
-    first_profile
-    exit 0
-  fi
-else
-  quota_cmd=${FM_DISPATCH_QUOTA_AXI:-quota-axi}
-  if ! command -v "$quota_cmd" >/dev/null 2>&1; then
-    log "quota-axi missing; using first profile"
-    first_profile
-    exit 0
-  fi
-  quota_json=$("$quota_cmd" --json 2>/dev/null)
-  quota_status=$?
-  if [ "$quota_status" -ne 0 ]; then
-    log "quota-axi exited $quota_status; using first profile"
-    first_profile
-    exit 0
-  fi
-fi
-
-if ! printf '%s\n' "$quota_json" | jq -e 'type == "object" and (.providers | type) == "array"' >/dev/null 2>&1; then
-  log "quota-axi returned unparseable JSON; using first profile"
+if ! load_quota; then
+  log "using first profile"
   first_profile
   exit 0
 fi

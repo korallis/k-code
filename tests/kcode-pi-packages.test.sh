@@ -92,7 +92,14 @@ with (root / "config/crew-dispatch.json").open(encoding="utf-8") as handle:
 profiles = []
 for rule in dispatch["rules"]:
     use = rule["use"]
-    profiles.extend(use if isinstance(use, list) else [use])
+    rule_profiles = use if isinstance(use, list) else [use]
+    profiles.extend(rule_profiles)
+    profiles.extend(
+        profile["quota"]["fallback"]
+        for profile in rule_profiles
+        if isinstance(profile.get("quota"), dict)
+        and isinstance(profile["quota"].get("fallback"), dict)
+    )
 profiles.append(dispatch["default"])
 if any(profile["harness"] != "pi" for profile in profiles):
     raise SystemExit("a dispatch profile escapes Pi")
@@ -103,10 +110,18 @@ if research["use"][2] != {
     "harness": "pi",
     "model": "claude-bridge/claude-fable-5",
     "effort": "max",
+    "quota": {
+        "provider": "claude",
+        "window": "model:fable",
+        "percentRemainingAbove": 0,
+        "fallback": {
+            "harness": "pi",
+            "model": "claude-bridge/claude-opus-4-8",
+            "effort": "max",
+        },
+    },
 }:
-    raise SystemExit("research triad third profile is not Fable 5 through Pi")
-if "claude-bridge/claude-opus-4-8" not in research["why"]:
-    raise SystemExit("research triad omits its Pi bridge Opus fallback")
+    raise SystemExit("research triad third profile lacks its executable Pi quota fallback")
 PY
   pass 'crew, secondmate, and research triad provider routes all stay inside Pi'
 }
