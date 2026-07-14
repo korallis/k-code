@@ -178,6 +178,83 @@ EOF_HOOK
   pass 'rollback preserves paths the transaction did not create'
 }
 
+test_restore_rollback_preserves_concurrent_child() {
+  local temp home hook destination out rc
+  temp=$(physical_temp_root kcode-skills-concurrent-child)
+  home="$temp/home"
+  hook="$temp/add-child"
+  mkdir -p "$home"
+  cat > "$hook" <<'EOF_HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$2" = 1 ] || exit 0
+printf 'foreign concurrent child\n' > "$1/concurrent.txt"
+EOF_HOOK
+  chmod +x "$hook"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_AFTER_PROMOTE_HOOK="$hook" KCODE_RESTORE_TEST_FAIL_AFTER=1 \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore ignored failure after a concurrent child appeared'
+  destination=$(dirname "$(find "$home" -type f -name concurrent.txt -print -quit)")
+  [ "$(cat "$destination/concurrent.txt")" = 'foreign concurrent child' ] \
+    || fail "rollback removed or changed a concurrent child: $out"
+  assert_absent "$destination/SKILL.md" 'rollback retained captured files beside a concurrent child'
+  pass 'rollback removes only captured entries and preserves concurrent children'
+}
+
+test_restore_does_not_journal_replaced_promotion() {
+  local temp home hook out rc
+  temp=$(physical_temp_root kcode-skills-replaced-promotion)
+  home="$temp/home"
+  hook="$temp/replace-promotion"
+  mkdir -p "$home"
+  cat > "$hook" <<'EOF_HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$2" = 1 ] || exit 0
+mv "$1" "$1.displaced"
+rm -rf "$1.displaced"
+mkdir "$1"
+printf 'foreign replacement\n' > "$1/foreign.txt"
+EOF_HOOK
+  chmod +x "$hook"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_AFTER_RENAME_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore accepted a promoted path replaced before ownership verification'
+  [ "$(find "$home" -type f -name foreign.txt -exec cat {} \;)" = 'foreign replacement' ] \
+    || fail "rollback removed or changed a foreign replacement: $out"
+  pass 'promotion ownership uses staged identity and preserves replacements'
+}
+
+test_restore_does_not_journal_replaced_directory() {
+  local temp home hook out rc
+  temp=$(physical_temp_root kcode-skills-replaced-directory)
+  home="$temp/home"
+  hook="$temp/replace-directory"
+  mkdir -p "$home"
+  cat > "$hook" <<EOF_HOOK
+#!/usr/bin/env bash
+set -euo pipefail
+[ "\$1" = .agents ] || exit 0
+mv "$home/.agents" "$home/.agents.displaced"
+rm -rf "$home/.agents.displaced"
+mkdir "$home/.agents"
+printf 'foreign directory\n' > "$home/.agents/foreign.txt"
+EOF_HOOK
+  chmod +x "$hook"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_AFTER_DIRECTORY_RENAME_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore accepted a parent directory replaced during creation'
+  [ "$(cat "$home/.agents/foreign.txt")" = 'foreign directory' ] \
+    || fail "rollback removed or changed a foreign parent directory: $out"
+  pass 'directory ownership is captured before publication'
+}
+
 test_restore_rejects_symlinked_ancestor() {
   local temp home outside out rc
   temp=$(physical_temp_root kcode-skills-symlink-escape)
@@ -299,6 +376,9 @@ test_restore_preflights_late_marker_conflict
 test_restore_rolls_back_late_write_failure
 test_restore_revalidates_promotion_ancestors
 test_restore_preserves_concurrent_destination
+test_restore_rollback_preserves_concurrent_child
+test_restore_does_not_journal_replaced_promotion
+test_restore_does_not_journal_replaced_directory
 test_restore_rejects_symlinked_ancestor
 test_restore_rejects_symlink_above_nonexistent_home
 test_verify_home_rejects_stale_marker

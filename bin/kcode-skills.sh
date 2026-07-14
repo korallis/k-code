@@ -352,7 +352,9 @@ import ctypes
 import errno
 import os
 import platform
+import secrets
 import stat
+import subprocess
 import sys
 
 home, plan = map(os.path.abspath, sys.argv[1:])
@@ -364,19 +366,22 @@ system = platform.system()
 created_dirs = []
 created_paths = []
 fds = {}
+temporary_number = 0
 
 
 def identity(value):
     return value.st_dev, value.st_ino
 
 
-def rename_noreplace(source, parent_fd, name):
-    source_b = os.fsencode(source)
+def rename_noreplace(source_parent_fd, source_name, parent_fd, name):
+    source_b = os.fsencode(source_name)
     name_b = os.fsencode(name)
     if system == "Darwin" and hasattr(libc, "renameatx_np"):
-        result = libc.renameatx_np(-2, source_b, parent_fd, name_b, 0x00000004)
+        result = libc.renameatx_np(
+            source_parent_fd, source_b, parent_fd, name_b, 0x00000004
+        )
     elif system == "Linux" and hasattr(libc, "renameat2"):
-        result = libc.renameat2(-100, source_b, parent_fd, name_b, 1)
+        result = libc.renameat2(source_parent_fd, source_b, parent_fd, name_b, 1)
     else:
         raise OSError(errno.ENOTSUP, "atomic no-replace rename is unavailable")
     if result != 0:
@@ -384,57 +389,180 @@ def rename_noreplace(source, parent_fd, name):
         raise OSError(error, os.strerror(error), name)
 
 
+def capture_tree(path):
+    captured = []
+    root = os.lstat(path)
+    captured.append(((), identity(root), root.st_mode))
+    if stat.S_ISDIR(root.st_mode):
+        for directory, names, files in os.walk(path, topdown=True, followlinks=False):
+            names.sort()
+            files.sort()
+            relative_directory = os.path.relpath(directory, path)
+            prefix = () if relative_directory == "." else tuple(relative_directory.split(os.path.sep))
+            for name in names + files:
+                value = os.lstat(os.path.join(directory, name))
+                captured.append((prefix + (name,), identity(value), value.st_mode))
+    return captured
+
+
+def make_owned_directory(parent_fd, name):
+    global temporary_number
+    while True:
+        temporary_number += 1
+        temporary = f".kcode-directory-{os.getpid()}-{temporary_number}"
+        try:
+            os.mkdir(temporary, dir_fd=parent_fd)
+            break
+        except FileExistsError:
+            continue
+    fd = None
+    try:
+        fd = os.open(temporary, flags, dir_fd=parent_fd)
+        expected = identity(os.fstat(fd))
+        rename_noreplace(parent_fd, temporary, parent_fd, name)
+        run_hook("KCODE_RESTORE_TEST_AFTER_DIRECTORY_RENAME_HOOK", name, temporary_number)
+        value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if identity(value) != expected:
+            raise OSError(errno.ESTALE, "created directory identity changed", name)
+        created_dirs.append((parent_fd, name, expected))
+        return fd
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        try:
+            os.rmdir(temporary, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def open_directory(parts):
     key = tuple(parts)
     if key in fds:
         return fds[key]
-    parent_parts = key[:-1]
-    parent_fd = open_directory(parent_parts)
+    parent_fd = open_directory(key[:-1])
     name = key[-1]
     try:
         fd = os.open(name, flags, dir_fd=parent_fd)
     except FileNotFoundError:
-        os.mkdir(name, dir_fd=parent_fd)
-        value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        created_dirs.append((parent_fd, name, identity(value)))
-        fd = os.open(name, flags, dir_fd=parent_fd)
+        fd = make_owned_directory(parent_fd, name)
     fds[key] = fd
     return fd
 
 
-def remove_tree(parent_fd, name):
-    fd = os.open(name, flags, dir_fd=parent_fd)
+def open_owned_parent(root_fd, components, provenance):
+    fd = os.dup(root_fd)
     try:
-        for entry in os.scandir(fd):
-            value = entry.stat(follow_symlinks=False)
-            if stat.S_ISDIR(value.st_mode):
-                remove_tree(fd, entry.name)
-            else:
-                os.unlink(entry.name, dir_fd=fd)
-    finally:
+        for depth, component in enumerate(components, 1):
+            expected, mode = provenance[components[:depth]]
+            if not stat.S_ISDIR(mode):
+                raise OSError(errno.ENOTDIR, "owned path parent is not a directory", component)
+            child = os.open(component, flags, dir_fd=fd)
+            if identity(os.fstat(child)) != expected:
+                os.close(child)
+                raise OSError(errno.ESTALE, "owned path identity changed", component)
+            os.close(fd)
+            fd = child
+        return fd
+    except Exception:
         os.close(fd)
-    os.rmdir(name, dir_fd=parent_fd)
+        raise
+
+
+def quarantine_name():
+    return f".kcode-rollback-{os.getpid()}-{secrets.token_hex(12)}"
+
+
+def quarantine(parent_fd, name):
+    temporary = quarantine_name()
+    try:
+        rename_noreplace(parent_fd, name, parent_fd, temporary)
+    except FileNotFoundError:
+        return None
+    return temporary
+
+
+def restore_quarantine(parent_fd, temporary, name):
+    try:
+        rename_noreplace(parent_fd, temporary, parent_fd, name)
+    except (FileExistsError, FileNotFoundError):
+        pass
+
+
+def remove_owned_entry(parent_fd, name, expected, mode):
+    temporary = quarantine(parent_fd, name)
+    if temporary is None:
+        return
+    try:
+        value = os.stat(temporary, dir_fd=parent_fd, follow_symlinks=False)
+        if identity(value) != expected:
+            restore_quarantine(parent_fd, temporary, name)
+            return
+        if stat.S_ISDIR(mode):
+            os.rmdir(temporary, dir_fd=parent_fd)
+        else:
+            os.unlink(temporary, dir_fd=parent_fd)
+    except OSError:
+        restore_quarantine(parent_fd, temporary, name)
+
+
+def remove_owned_path(parent_fd, name, captured):
+    provenance = {components: (expected, mode) for components, expected, mode in captured}
+    root_expected, root_mode = provenance[()]
+    temporary = quarantine(parent_fd, name)
+    if temporary is None:
+        return
+    try:
+        value = os.stat(temporary, dir_fd=parent_fd, follow_symlinks=False)
+        if identity(value) != root_expected:
+            restore_quarantine(parent_fd, temporary, name)
+            return
+        if not stat.S_ISDIR(root_mode):
+            os.unlink(temporary, dir_fd=parent_fd)
+            return
+        root_fd = os.open(temporary, flags, dir_fd=parent_fd)
+        try:
+            if identity(os.fstat(root_fd)) != root_expected:
+                restore_quarantine(parent_fd, temporary, name)
+                return
+            entries = sorted(
+                (item for item in captured if item[0]),
+                key=lambda item: (len(item[0]), item[0]),
+                reverse=True,
+            )
+            for components, expected, mode in entries:
+                try:
+                    owner_fd = open_owned_parent(root_fd, components[:-1], provenance)
+                    try:
+                        remove_owned_entry(owner_fd, components[-1], expected, mode)
+                    finally:
+                        os.close(owner_fd)
+                except OSError:
+                    continue
+        finally:
+            os.close(root_fd)
+        try:
+            os.rmdir(temporary, dir_fd=parent_fd)
+        except OSError:
+            restore_quarantine(parent_fd, temporary, name)
+    except OSError:
+        restore_quarantine(parent_fd, temporary, name)
 
 
 def rollback():
-    for parent_fd, name, expected in reversed(created_paths):
+    for parent_fd, name, captured in reversed(created_paths):
         try:
-            value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            if identity(value) != expected:
-                continue
-            if stat.S_ISDIR(value.st_mode):
-                remove_tree(parent_fd, name)
-            else:
-                os.unlink(name, dir_fd=parent_fd)
-        except FileNotFoundError:
+            remove_owned_path(parent_fd, name, captured)
+        except OSError:
             pass
     for parent_fd, name, expected in reversed(created_dirs):
-        try:
-            value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            if identity(value) == expected:
-                os.rmdir(name, dir_fd=parent_fd)
-        except (FileNotFoundError, OSError):
-            pass
+        remove_owned_entry(parent_fd, name, expected, stat.S_IFDIR)
+
+
+def run_hook(variable, destination, number):
+    hook = os.environ.get(variable)
+    if hook:
+        subprocess.run((hook, destination, str(number)), check=True)
 
 
 root_fd = os.open(os.path.sep, flags)
@@ -457,9 +585,18 @@ try:
                 pass
             else:
                 raise FileExistsError(errno.EEXIST, "restore destination changed after preflight", destination)
-            rename_noreplace(source, parent_fd, name)
+            captured = capture_tree(source)
+            source_parent = os.open(os.path.dirname(source), flags)
+            try:
+                rename_noreplace(source_parent, os.path.basename(source), parent_fd, name)
+            finally:
+                os.close(source_parent)
+            run_hook("KCODE_RESTORE_TEST_AFTER_RENAME_HOOK", destination, number)
             value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            created_paths.append((parent_fd, name, identity(value)))
+            if identity(value) != captured[0][1]:
+                raise OSError(errno.ESTALE, "promoted path identity changed", destination)
+            created_paths.append((parent_fd, name, captured))
+            run_hook("KCODE_RESTORE_TEST_AFTER_PROMOTE_HOOK", destination, number)
             fail_after = os.environ.get("KCODE_RESTORE_TEST_FAIL_AFTER")
             if fail_after and number == int(fail_after):
                 raise OSError(errno.EIO, "injected restore promotion failure", destination)
