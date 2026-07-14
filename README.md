@@ -178,7 +178,7 @@ flowchart LR
   LOCAL -.->|never enters tracked tree| LIVE
 ```
 
-The script performs five guarded steps:
+The script performs six guarded steps:
 
 1. It mirrors the live working tree with volatile runtime, secrets, product checkouts, and k-code-owned surfaces excluded.
 2. It rewrites the fork's ignore contract so `projects/`, runtime state, credentials, and local gate state remain untracked.

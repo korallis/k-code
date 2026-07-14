@@ -5,12 +5,70 @@
 # It verifies the public operating-home boundary, captured skills, relative
 # documentation links, JSON routing config, and common secret or PHI shapes.
 #
-# Usage: bin/kcode-integrity.sh
+# Usage: bin/kcode-integrity.sh [--content-scan-only]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 fail=0
+
+scan_tracked_text_pattern() {
+  local label=$1 ignore_case=$2 pattern=$3 entry mode path matched=0
+  while IFS= read -r -d '' entry; do
+    mode=${entry%% *}
+    case "$mode" in
+      100644|100755) ;;
+      *) continue ;;
+    esac
+    path=${entry#*$'\t'}
+    if [ "$ignore_case" -eq 1 ]; then
+      LC_ALL=C grep -IqEi -e "$pattern" -- "$path" || continue
+    else
+      LC_ALL=C grep -IqE -e "$pattern" -- "$path" || continue
+    fi
+    printf 'kcode-integrity: %s %s matched tracked text path %q\n' \
+      "$label" "$pattern" "$path" >&2
+    matched=1
+  done < <(git ls-files -s -z)
+  [ "$matched" -eq 0 ] || fail=1
+}
+
+scan_tracked_content() {
+  local pattern
+  local secret_patterns=(
+    'ghp_[A-Za-z0-9]{36,}'
+    'gho_[A-Za-z0-9]{36,}'
+    'github_pat_[A-Za-z0-9_]{20,}'
+    'sk-[A-Za-z0-9]{32,}'
+    'xox[baprs]-[A-Za-z0-9-]{20,}'
+    'AKIA[0-9A-Z]{16}'
+    'BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY'
+  )
+  local phi_patterns=(
+    '(^|[^0-9])[0-9]{3}-[0-9]{2}-[0-9]{4}([^0-9]|$)'
+    '(MRN|medical record number)[[:space:]_:#=-]*[A-Z0-9]{6,}'
+    '(patient|member)[[:space:]_-]*(name|id)[[:space:]_:#=-]+[A-Za-z0-9][A-Za-z0-9._-]{4,}'
+    '(DOB|date of birth)[[:space:]_:#=-]+(19|20)[0-9]{2}[-/][0-9]{1,2}[-/][0-9]{1,2}'
+  )
+
+  for pattern in "${secret_patterns[@]}"; do
+    scan_tracked_text_pattern 'secret pattern' 0 "$pattern"
+  done
+  for pattern in "${phi_patterns[@]}"; do
+    scan_tracked_text_pattern 'possible PHI pattern' 1 "$pattern"
+  done
+  scan_tracked_text_pattern 'possible FMX pairing token pattern' 0 \
+    'FMX_PAIRING_TOKEN=[A-Za-z0-9_-]{20,}'
+}
+
+if [ "${1:-}" = '--content-scan-only' ]; then
+  [ "$#" -eq 1 ] || { printf 'usage: %s [--content-scan-only]\n' "$0" >&2; exit 2; }
+  scan_tracked_content
+  exit "$fail"
+elif [ "$#" -ne 0 ]; then
+  printf 'usage: %s [--content-scan-only]\n' "$0" >&2
+  exit 2
+fi
 
 required=(
   README.md
@@ -29,6 +87,7 @@ required=(
   tests/kcode-sync.test.sh
   tests/kcode-skills.test.sh
   tests/kcode-pi-packages.test.sh
+  tests/kcode-integrity.test.sh
   skill-snapshot/README.md
   skill-snapshot/roots.tsv
   skill-snapshot/sources.tsv
@@ -74,42 +133,7 @@ if git ls-files | grep -E '(^|/)\.env$|\.key$|(^|/)(credentials?|tokens?)(\.[^/]
   fail=1
 fi
 
-secret_patterns=(
-  'ghp_[A-Za-z0-9]{36,}'
-  'gho_[A-Za-z0-9]{36,}'
-  'github_pat_[A-Za-z0-9_]{20,}'
-  'sk-[A-Za-z0-9]{32,}'
-  'xox[baprs]-[A-Za-z0-9-]{20,}'
-  'AKIA[0-9A-Z]{16}'
-  'BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY'
-)
-phi_patterns=(
-  '(^|[^0-9])[0-9]{3}-[0-9]{2}-[0-9]{4}([^0-9]|$)'
-  '(MRN|medical record number)[[:space:]_:#=-]*[A-Z0-9]{6,}'
-  '(patient|member)[[:space:]_-]*(name|id)[[:space:]_:#=-]+[A-Za-z0-9][A-Za-z0-9._-]{4,}'
-  '(DOB|date of birth)[[:space:]_:#=-]+(19|20)[0-9]{2}[-/][0-9]{1,2}[-/][0-9]{1,2}'
-)
-for pattern in "${secret_patterns[@]}"; do
-  if grep -RInE --exclude-dir=.git --exclude-dir=projects --exclude-dir=node_modules \
-      --exclude='*.jpg' --exclude='*.png' --exclude='*.gif' --exclude='*.mp4' \
-      --exclude='*.bundle' -e "$pattern" .; then
-    printf 'kcode-integrity: secret pattern matched: %s\n' "$pattern" >&2
-    fail=1
-  fi
-done
-for pattern in "${phi_patterns[@]}"; do
-  if grep -RInEi --exclude-dir=.git --exclude-dir=projects --exclude-dir=node_modules \
-      --exclude='*.jpg' --exclude='*.png' --exclude='*.gif' --exclude='*.mp4' \
-      --exclude='*.bundle' -e "$pattern" .; then
-    printf 'kcode-integrity: possible PHI pattern matched: %s\n' "$pattern" >&2
-    fail=1
-  fi
-done
-if grep -RInE --exclude-dir=.git --exclude-dir=projects \
-    'FMX_PAIRING_TOKEN=[A-Za-z0-9_-]{20,}' .; then
-  printf 'kcode-integrity: possible real FMX_PAIRING_TOKEN is present\n' >&2
-  fail=1
-fi
+scan_tracked_content
 
 if grep -Ei 'recurse-submodules|projects/(k-zero|service-referral)|private submodule|project submodules|submodule pointers' README.md; then
   printf 'kcode-integrity: README contains obsolete product-bundling guidance\n' >&2
