@@ -5,7 +5,7 @@
 # It verifies the public operating-home boundary, captured skills, relative
 # documentation links, JSON routing config, and common secret or PHI shapes.
 #
-# Usage: bin/kcode-integrity.sh [--content-scan-only]
+# Usage: bin/kcode-integrity.sh [--content-scan-only|--agent-contract-only]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -74,6 +74,17 @@ scan_tracked_data_policy() {
   [ "$matched" -eq 0 ] || fail=1
 }
 
+verify_agent_contract() {
+  if [ ! -L CLAUDE.md ]; then
+    printf 'kcode-integrity: CLAUDE.md must be a symlink to AGENTS.md\n' >&2
+    return 1
+  fi
+  if [ "$(readlink CLAUDE.md)" != 'AGENTS.md' ]; then
+    printf 'kcode-integrity: CLAUDE.md must target AGENTS.md exactly\n' >&2
+    return 1
+  fi
+}
+
 scan_tracked_content() {
   local pattern
   local secret_patterns=(
@@ -104,17 +115,22 @@ scan_tracked_content() {
 }
 
 if [ "${1:-}" = '--content-scan-only' ]; then
-  [ "$#" -eq 1 ] || { printf 'usage: %s [--content-scan-only]\n' "$0" >&2; exit 2; }
+  [ "$#" -eq 1 ] || { printf 'usage: %s [--content-scan-only|--agent-contract-only]\n' "$0" >&2; exit 2; }
   scan_tracked_content
   exit "$fail"
+elif [ "${1:-}" = '--agent-contract-only' ]; then
+  [ "$#" -eq 1 ] || { printf 'usage: %s [--content-scan-only|--agent-contract-only]\n' "$0" >&2; exit 2; }
+  verify_agent_contract
+  exit
 elif [ "$#" -ne 0 ]; then
-  printf 'usage: %s [--content-scan-only]\n' "$0" >&2
+  printf 'usage: %s [--content-scan-only|--agent-contract-only]\n' "$0" >&2
   exit 2
 fi
 
 required=(
   README.md
   AGENTS.md
+  CLAUDE.md
   LICENSE
   .tasks.toml
   .gitattributes
@@ -144,6 +160,7 @@ required=(
 for path in "${required[@]}"; do
   [ -e "$path" ] || { printf 'kcode-integrity: missing %s\n' "$path" >&2; exit 1; }
 done
+verify_agent_contract
 for asset in \
   assets/kcode/hero-banner.jpg \
   assets/kcode/fleet-architecture.jpg \

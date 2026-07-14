@@ -92,6 +92,35 @@ test_scan_rejects_generated_data_classes_and_keeps_safe_memory() {
   pass 'integrity excludes generated data classes without task-specific policy'
 }
 
+test_agent_contract_requires_exact_relative_symlink() {
+  local temp repo out rc
+  temp=$(fm_test_tmproot kcode-integrity-agent-contract)
+  repo="$temp/repo"
+  build_fixture "$repo"
+  printf '# Agent contract\n' > "$repo/AGENTS.md"
+  ln -s AGENTS.md "$repo/CLAUDE.md"
+
+  out=$("$repo/bin/kcode-integrity.sh" --agent-contract-only 2>&1) \
+    || fail "integrity rejected the exact CLAUDE.md compatibility symlink: $out"
+
+  rm "$repo/CLAUDE.md"
+  printf '# Diverged contract\n' > "$repo/CLAUDE.md"
+  rc=0
+  out=$("$repo/bin/kcode-integrity.sh" --agent-contract-only 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'integrity accepted CLAUDE.md as a regular file'
+  assert_contains "$out" 'must be a symlink to AGENTS.md' \
+    'regular-file rejection did not explain the compatibility contract'
+
+  rm "$repo/CLAUDE.md"
+  ln -s ./AGENTS.md "$repo/CLAUDE.md"
+  rc=0
+  out=$("$repo/bin/kcode-integrity.sh" --agent-contract-only 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'integrity accepted a noncanonical CLAUDE.md symlink target'
+  assert_contains "$out" 'must target AGENTS.md exactly' \
+    'noncanonical-target rejection did not explain the exact target requirement'
+  pass 'integrity enforces the exact CLAUDE.md compatibility symlink'
+}
+
 test_scan_reports_paths_and_patterns_without_match_content() {
   local temp repo secret pairing subject field value finding out rc
   temp=$(fm_test_tmproot kcode-integrity-diagnostics)
@@ -123,4 +152,5 @@ test_scan_reports_paths_and_patterns_without_match_content() {
 test_scan_ignores_untracked_private_and_tracked_binary_files
 test_scan_rejects_secret_present_only_in_index
 test_scan_rejects_generated_data_classes_and_keeps_safe_memory
+test_agent_contract_requires_exact_relative_symlink
 test_scan_reports_paths_and_patterns_without_match_content
