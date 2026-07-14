@@ -18,7 +18,8 @@ build_fixture() {
     "$live/.github/workflows" \
     "$live/.pi/npm" \
     "$live/config" \
-    "$live/data" \
+    "$live/data/ordinary-task/previews" \
+    "$live/data/ordinary-task/screenshots" \
     "$live/projects/source-product" \
     "$live/state"
   printf 'live tool\n' > "$live/bin/live-tool.sh"
@@ -32,9 +33,16 @@ build_fixture() {
   printf 'package cache\n' > "$live/.pi/npm/package-lock.json"
   printf '{}\n' > "$live/config/crew-dispatch.json"
   printf 'durable\n' > "$live/data/backlog.md"
+  printf 'safe durable task memory\n' > "$live/data/ordinary-task/brief.md"
+  printf 'archived git history\n' > "$live/data/ordinary-task/history.bundle"
+  printf 'generated preview\n' > "$live/data/ordinary-task/previews/index.html"
+  printf 'generated render\n' > "$live/data/ordinary-task/screenshots/frame.png"
   printf 'source product\n' > "$live/projects/source-product/only-source.txt"
   printf 'runtime\n' > "$live/state/task.status"
   printf 'live README\n' > "$live/README.md"
+  printf 'upstream contributing\n' > "$live/CONTRIBUTING.md"
+  mkdir -p "$live/docs"
+  printf 'upstream scripts guide\n' > "$live/docs/scripts.md"
   printf 'upstream attributes\n' > "$live/.gitattributes"
   printf 'upstream validation\n' > "$live/.no-mistakes.yaml"
   git -C "$live" add -A
@@ -53,6 +61,8 @@ build_fixture() {
     "$destination/skill-snapshot" \
     "$destination/projects/legacy"
   printf 'fork README\n' > "$destination/README.md"
+  printf 'fork contributing\n' > "$destination/CONTRIBUTING.md"
+  printf 'fork scripts guide\n' > "$destination/docs/scripts.md"
   printf 'fork attributes\n' > "$destination/.gitattributes"
   printf 'fork validation\n' > "$destination/.no-mistakes.yaml"
   printf '{"packages":["npm:pi-xai-oauth@1.3.3","npm:pi-claude-bridge@0.6.2"]}\n' \
@@ -65,6 +75,9 @@ build_fixture() {
   printf 'protected sync\n' > "$destination/bin/kcode-sync.sh"
   printf 'protected test\n' > "$destination/tests/kcode-sync.test.sh"
   printf 'legacy local checkout\n' > "$destination/projects/legacy/local.txt"
+  mkdir -p "$destination/data/ordinary-task/renders"
+  printf 'stale render\n' > "$destination/data/ordinary-task/renders/frame.html"
+  printf 'stale bundle\n' > "$destination/data/ordinary-task/stale-history.bundle"
   cat > "$destination/bin/kcode-skills.sh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$KCODE_SKILL_LOG"
@@ -106,6 +119,10 @@ test_sync_preserves_local_products_but_removes_tracking() {
     'dry-run sync did not stop before commit and push'
   [ "$before" = "$after" ] || fail 'dry-run sync created a commit'
   [ "$(cat "$destination/README.md")" = 'fork README' ] || fail 'sync overwrote fork README'
+  [ "$(cat "$destination/CONTRIBUTING.md")" = 'fork contributing' ] \
+    || fail 'sync overwrote fork contributing guidance'
+  [ "$(cat "$destination/docs/scripts.md")" = 'fork scripts guide' ] \
+    || fail 'sync overwrote fork scripts guidance'
   [ "$(cat "$destination/.gitattributes")" = 'fork attributes' ] \
     || fail 'sync overwrote fork vendored-source attributes'
   [ "$(cat "$destination/.no-mistakes.yaml")" = 'fork validation' ] \
@@ -125,6 +142,14 @@ test_sync_preserves_local_products_but_removes_tracking() {
   assert_present "$destination/skills/public-skill/SKILL.md" 'sync did not mirror public skills'
   assert_absent "$destination/state/task.status" 'sync copied volatile runtime state'
   assert_absent "$destination/projects/source-product" 'sync copied a source product checkout'
+  assert_present "$destination/data/ordinary-task/brief.md" 'sync dropped safe durable task memory'
+  assert_absent "$destination/data/ordinary-task/history.bundle" 'sync copied an archived Git bundle'
+  assert_absent "$destination/data/ordinary-task/previews" 'sync copied generated previews'
+  assert_absent "$destination/data/ordinary-task/screenshots" 'sync copied generated renders'
+  assert_absent "$destination/data/ordinary-task/stale-history.bundle" 'sync retained a stale archived Git bundle'
+  assert_absent "$destination/data/ordinary-task/renders" 'sync retained stale generated renders'
+  assert_not_contains "$(cat "$SYNC")" 'kcode-rebuild-g7' \
+    'sync still special-cases a historical task id'
 
   assert_present "$destination/projects/product/README.md" 'sync deleted an existing local product checkout'
   assert_present "$destination/projects/legacy/local.txt" 'sync deleted an existing ignored local product directory'

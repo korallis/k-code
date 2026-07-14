@@ -84,6 +84,67 @@ test_clean_home_restore() {
   pass 'clean home restores all captured harness placements without absolute links'
 }
 
+test_restore_stages_on_destination_filesystem() {
+  local temp home hook out
+  temp=$(physical_temp_root kcode-skills-exdev)
+  home="$temp/home"
+  hook="$temp/assert-staging-filesystem"
+  mkdir -p "$home"
+  cat > "$hook" <<EOF_HOOK
+#!/usr/bin/env bash
+set -euo pipefail
+staging=\$1
+[ "\$(dirname "\$staging")" = '$home' ] || {
+  echo 'EXDEV regression: staging is outside the existing destination filesystem' >&2
+  exit 18
+}
+[ "\$(stat -f %d "\$staging")" = "\$(stat -f %d '$home')" ]
+EOF_HOOK
+  chmod +x "$hook"
+
+  out=$(KCODE_RESTORE_TEST_AFTER_STAGING_MKDIR_HOOK="$hook" \
+    "$SKILLS" restore --home "$home" 2>&1) \
+    || fail "restore did not stage inside the existing destination filesystem: $out"
+  "$SKILLS" verify-home --home "$home" >/dev/null
+  pass 'existing mounted homes stage and promote without an EXDEV boundary'
+}
+
+test_restore_preserves_and_verifies_executable_modes() {
+  local temp home executable out rc
+  temp=$(physical_temp_root kcode-skills-modes)
+  home="$temp/home"
+  "$SKILLS" restore --home "$home" >/dev/null
+  executable="$home/.claude/skills/bootstrap-ios/scripts/bootstrap-ios-skills.sh"
+  [ -x "$executable" ] || fail 'restore dropped a captured executable bit'
+  chmod 0644 "$executable"
+  rc=0
+  out=$("$SKILLS" verify-home --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'verify-home accepted executable mode drift'
+  assert_contains "$out" 'restored skill differs or is missing' \
+    'mode drift failure did not identify the restored skill'
+  pass 'restore preserves executable bits and verification rejects mode drift'
+}
+
+test_snapshot_rejects_corrupt_provenance() {
+  local backup out rc
+  backup=$(mktemp "${TMPDIR:-/tmp}/kcode-sources.XXXXXX")
+  cp "$ROOT/skill-snapshot/sources.tsv" "$backup"
+  cleanup_corrupt_provenance() {
+    cp "$backup" "$ROOT/skill-snapshot/sources.tsv"
+    rm -f "$backup"
+  }
+  trap 'cleanup_corrupt_provenance; fm_test_cleanup' EXIT
+  grep -v '^no-mistakes' "$backup" > "$ROOT/skill-snapshot/sources.tsv"
+  rc=0
+  out=$("$SKILLS" verify 2>&1) || rc=$?
+  cleanup_corrupt_provenance
+  trap 'fm_test_cleanup || true' EXIT
+  [ "$rc" -ne 0 ] || fail 'snapshot verification accepted missing source provenance'
+  assert_contains "$out" 'does not cover captured roots and vendor directories' \
+    'corrupt source provenance failure was not identified'
+  pass 'snapshot verification rejects corrupt provenance metadata'
+}
+
 test_restore_refuses_different_existing_skill() {
   local temp home out rc
   temp=$(physical_temp_root kcode-skills-collision)
@@ -135,7 +196,7 @@ test_restore_rolls_back_late_write_failure() {
   [ "$rc" -ne 0 ] || fail 'restore ignored a late promotion failure'
   after=$(find "$home" -mindepth 1 -print -exec shasum -a 256 {} \; 2>/dev/null | LC_ALL=C sort)
   [ "$after" = "$before" ] || fail "late promotion failure left a partial restore: $out"
-  [ -z "$(find "$temp" -maxdepth 1 -name '.kcode-restore.*' -print -quit)" ] \
+  [ -z "$(find "$home" -maxdepth 1 -name '.kcode-restore-*' -print -quit)" ] \
     || fail 'late promotion failure left transaction staging behind'
   pass 'late promotion failure rolls back every restored path'
 }
@@ -199,8 +260,8 @@ EOF_HOOK
   out=$(KCODE_RESTORE_TEST_AFTER_STAGING_MKDIR_HOOK="$hook" \
     "$SKILLS" restore --home "$home" 2>&1) || rc=$?
   [ "$rc" -eq 0 ] || fail "restore lost descriptor-owned staging after a name swap: $out"
-  replacement=$(find "$temp" -maxdepth 1 -name '.kcode-restore-*' ! -name '*.displaced' -print -quit)
-  displaced=$(find "$temp" -maxdepth 1 -name '.kcode-restore-*.displaced' -print -quit)
+  replacement=$(find "$home" -maxdepth 1 -name '.kcode-restore-*' ! -name '*.displaced' -print -quit)
+  displaced=$(find "$home" -maxdepth 1 -name '.kcode-restore-*.displaced' -print -quit)
   basename "${replacement%.displaced}" | grep -Eq '^\.kcode-restore-[0-9a-f]{48}$' \
     || fail 'staging directory did not use an unpredictable private name'
   [ -n "$replacement" ] && [ "$(cat "$replacement/foreign.txt")" = 'foreign staging replacement' ] \
@@ -732,6 +793,9 @@ EOF_JSON
 
 test_snapshot_verifies
 test_clean_home_restore
+test_restore_stages_on_destination_filesystem
+test_restore_preserves_and_verifies_executable_modes
+test_snapshot_rejects_corrupt_provenance
 test_restore_refuses_different_existing_skill
 test_restore_preflights_late_marker_conflict
 test_restore_rolls_back_late_write_failure

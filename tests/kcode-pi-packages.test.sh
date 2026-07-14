@@ -97,6 +97,8 @@ profiles.append(dispatch["default"])
 if any(profile["harness"] != "pi" for profile in profiles):
     raise SystemExit("a dispatch profile escapes Pi")
 research = next(rule for rule in dispatch["rules"] if "research OR planning" in rule["when"])
+if research.get("select") != "all" or len(research["use"]) != 3:
+    raise SystemExit("research triad does not fan out all three profiles")
 if research["use"][2] != {
     "harness": "pi",
     "model": "claude-bridge/claude-fable-5",

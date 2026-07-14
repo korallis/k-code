@@ -13,23 +13,27 @@ cd "$ROOT"
 fail=0
 
 scan_tracked_text_pattern() {
-  local label=$1 ignore_case=$2 pattern=$3 entry mode path matched=0
+  local label=$1 ignore_case=$2 pattern=$3 entry metadata mode object stage path matched=0
   while IFS= read -r -d '' entry; do
-    mode=${entry%% *}
-    case "$mode" in
-      100644|100755) ;;
+    metadata=${entry%%$'\t'*}
+    mode=${metadata%% *}
+    object=${metadata#* }
+    object=${object%% *}
+    stage=${metadata##* }
+    path=${entry#*$'\t'}
+    case "$mode:$stage" in
+      100644:0|100755:0) ;;
       *) continue ;;
     esac
-    path=${entry#*$'\t'}
     if [ "$ignore_case" -eq 1 ]; then
-      LC_ALL=C grep -IqEi -e "$pattern" -- "$path" || continue
+      git cat-file blob "$object" | LC_ALL=C grep -IEi -e "$pattern" >/dev/null || continue
     else
-      LC_ALL=C grep -IqE -e "$pattern" -- "$path" || continue
+      git cat-file blob "$object" | LC_ALL=C grep -IE -e "$pattern" >/dev/null || continue
     fi
     printf 'kcode-integrity: %s %s matched tracked text path %q\n' \
       "$label" "$pattern" "$path" >&2
     matched=1
-  done < <(git ls-files -s -z)
+  done < <(git ls-files --stage -z)
   [ "$matched" -eq 0 ] || fail=1
 }
 
@@ -88,12 +92,15 @@ required=(
   tests/kcode-skills.test.sh
   tests/kcode-pi-packages.test.sh
   tests/kcode-integrity.test.sh
+  tests/kcode-validation-isolation.test.sh
   skill-snapshot/README.md
   skill-snapshot/roots.tsv
   skill-snapshot/sources.tsv
   skill-snapshot/harness-managed.tsv
+  skill-snapshot/overlays.tsv
   skill-snapshot/restore.tsv
   skill-snapshot/checksums.sha256
+  skill-snapshot/modes.tsv
 )
 for path in "${required[@]}"; do
   [ -e "$path" ] || { printf 'kcode-integrity: missing %s\n' "$path" >&2; exit 1; }
@@ -213,8 +220,13 @@ expected_third = {
     "effort": "max",
 }
 research_use = research_rules[0].get("use", []) if len(research_rules) == 1 else []
-if not isinstance(research_use, list) or len(research_use) != 3 or research_use[2] != expected_third:
-    raise SystemExit("kcode-integrity: research triad third profile must be Fable 5 through Pi")
+if (
+    not isinstance(research_use, list)
+    or len(research_use) != 3
+    or research_rules[0].get("select") != "all"
+    or research_use[2] != expected_third
+):
+    raise SystemExit("kcode-integrity: research triad must fan out all three Pi profiles")
 why = research_rules[0].get("why", "")
 if "claude-bridge/claude-opus-4-8" not in why or "never the standalone Claude harness" not in why:
     raise SystemExit("kcode-integrity: research triad must document the Pi bridge Opus fallback")

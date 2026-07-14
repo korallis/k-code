@@ -19,13 +19,16 @@ The audit covered the repository's `.agents/skills`, `.claude/skills`, and `skil
 | [`vendor/vercel-plugin`](vendor/vercel-plugin) | vercel/vercel-plugin | 28 active plugin skills | Apache-2.0 |
 
 [`sources.tsv`](sources.tsv) is the single owner of source repository, exact revision, license, and captured path provenance.
+[`overlays.tsv`](overlays.tsv) records fork-local corrections against those exact revisions with correction identity, target checksum, and deterministic verification evidence.
+The Pi 0.80.6 `max` effort correction is such an overlay, not a claim that the recorded upstream Firstmate revision already contained it.
 
-Every installed community source was matched byte for byte against the revision recorded there before it was copied.
+Every installed community source was matched byte for byte against the revision recorded there before it was copied, except for explicitly recorded overlays.
 
 Identical Claude, Codex, and Grok copies are stored once and expanded according to [`restore.tsv`](restore.tsv), so repeated installations do not create repeated vendored source.
 
 The exact snapshot scope is 58 deduplicated top-level skill sources, 78 restore placements, and 458 checksummed files.
 [`restore.tsv`](restore.tsv) is authoritative for placements, while [`checksums.sha256`](checksums.sha256) covers the complete captured source set, including repository-local skills, vendor licenses, scripts, references, and assets.
+[`modes.tsv`](modes.tsv) binds required regular-file and executable modes to that same exact path set.
 
 ## Harness-managed skills
 
@@ -56,7 +59,7 @@ Verify source coverage, provenance structure, checksums, frontmatter names, and 
 bin/kcode-skills.sh verify
 ```
 
-Print the deterministic root, source, harness-managed, and placement manifests:
+Print the deterministic root, source, overlay, harness-managed, mode, and placement manifests:
 
 ```sh
 bin/kcode-skills.sh inventory

@@ -25,13 +25,16 @@ pairing_value() {
 }
 
 test_scan_ignores_untracked_private_and_tracked_binary_files() {
-  local temp repo secret pairing out
+  local temp repo secret pairing subject field value out
   temp=$(fm_test_tmproot kcode-integrity-private)
   repo="$temp/repo"
   build_fixture "$repo"
   secret=$(secret_value)
   pairing=$(pairing_value)
-  printf '%s\n%s %s: %s\n%s\n' "$secret" patient id member12345 "$pairing" \
+  subject=patient
+  field=id
+  value="member""12345"
+  printf '%s\n%s %s: %s\n%s\n' "$secret" "$subject" "$field" "$value" "$pairing" \
     > "$repo/private/runtime.log"
   printf '\0%s\n' "$secret" > "$repo/binary.dat"
   git -C "$repo" add -f binary.dat
@@ -42,15 +45,36 @@ test_scan_ignores_untracked_private_and_tracked_binary_files() {
   pass 'content scan reads only tracked regular text files'
 }
 
+test_scan_rejects_secret_present_only_in_index() {
+  local temp repo secret out rc
+  temp=$(fm_test_tmproot kcode-integrity-index)
+  repo="$temp/repo"
+  build_fixture "$repo"
+  secret=$(secret_value)
+  printf '%s\n' "$secret" > "$repo/tracked.txt"
+  git -C "$repo" add tracked.txt
+  printf 'clean working tree replacement\n' > "$repo/tracked.txt"
+
+  rc=0
+  out=$("$repo/bin/kcode-integrity.sh" --content-scan-only 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'scanner accepted a secret present only in the staged snapshot'
+  assert_contains "$out" 'tracked.txt' 'index-only finding omitted the tracked path'
+  assert_not_contains "$out" "$secret" 'index-only finding disclosed secret content'
+  pass 'content scan reads indexed blobs instead of working-tree replacements'
+}
+
 test_scan_reports_paths_and_patterns_without_match_content() {
-  local temp repo secret pairing finding out rc
+  local temp repo secret pairing subject field value finding out rc
   temp=$(fm_test_tmproot kcode-integrity-diagnostics)
   repo="$temp/repo"
   build_fixture "$repo"
   secret=$(secret_value)
   pairing=$(pairing_value)
+  subject=patient
+  field=id
+  value="member""12345"
   finding="$repo/tracked finding.txt"
-  printf '%s\n%s %s: %s\n%s\n' "$secret" patient id member12345 "$pairing" > "$finding"
+  printf '%s\n%s %s: %s\n%s\n' "$secret" "$subject" "$field" "$value" "$pairing" > "$finding"
   git -C "$repo" add "tracked finding.txt"
 
   rc=0
@@ -68,4 +92,5 @@ test_scan_reports_paths_and_patterns_without_match_content() {
 }
 
 test_scan_ignores_untracked_private_and_tracked_binary_files
+test_scan_rejects_secret_present_only_in_index
 test_scan_reports_paths_and_patterns_without_match_content

@@ -189,7 +189,8 @@ Pick the single best-fit rule using your own judgment.
 This is explicitly not first-match: weigh all rules, their `when` text, and their `why` rationales against the actual task.
 For a chosen rule with a single-object `use`, or an array `use` with no `select`, resolve the first profile directly.
 For a chosen rule with `select: "quota-balanced"`, pipe the full rule JSON to `bin/fm-dispatch-select.sh` and use the compact JSON profile it prints.
-Extract that chosen concrete profile `(harness, model, effort)` and pass it to `bin/fm-spawn.sh` with explicit `--harness`, `--model`, and `--effort` flags for the axes that are set.
+For a chosen rule with `select: "all"`, dispatch one task per ordered profile with distinct task ids and the same task contract, then converge all reports before presenting the result or promoting implementation.
+Extract each chosen concrete profile `(harness, model, effort)` and pass it to `bin/fm-spawn.sh` with explicit `--harness`, `--model`, and `--effort` flags for the axes that are set.
 If no rule fits, use `default`.
 If `default` is absent, fall back to `config/crew-harness` through `bin/fm-harness.sh crew`, exactly as the static path did before dispatch profiles, but still pass that resolved harness explicitly.
 This is enforced: when `config/crew-dispatch.json` exists, `bin/fm-spawn.sh` refuses crewmate and scout launches that do not include an explicit harness (`--harness <name>`, a positional adapter name, or a raw launch command).

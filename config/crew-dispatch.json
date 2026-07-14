@@ -19,6 +19,7 @@
           "effort": "max"
         }
       ],
+      "select": "all",
       "why": "TRIAD CONVERGE, not either/or: the captain wants ALL THREE profiles spawned as coordinating co-draft scouts for every research or planning task - Grok 4.5 through Pi (high), GPT-5.6 Sol through Pi (high), and Fable 5 through Pi's claude-bridge provider (max) each draft, cross-review the others' drafts, and firstmate converges them into one final synthesis. THIRD-VOICE QUOTA SWAP: use the declared claude-bridge/claude-fable-5 profile whenever Fable 5 is within plan limits - check quota-axi's claude `model:fable` window; if unavailable, keep harness Pi and fall back to claude-bridge/claude-opus-4-8 at max effort, never the standalone Claude harness. MANDATORY TOOLS: every research and planning scout MUST use the exa and ref MCP servers for sources. Every model route stays inside Pi; the explicit xai-auth/grok-4.5 route is smoke-tested and avoids the standalone Grok harness."
     },
     {

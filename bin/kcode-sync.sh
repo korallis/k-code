@@ -10,9 +10,9 @@
 # Existing ignored product checkouts in the destination are never deleted.
 #
 # k-code-owned surfaces are not overwritten:
-#   README.md, .gitattributes, .gitignore, .no-mistakes.yaml, .pi/settings.json,
-#   .github/workflows/, assets/kcode/, docs/assets/, skill-snapshot/,
-#   bin/kcode-*.sh, and tests/kcode-*.test.sh.
+#   README.md, CONTRIBUTING.md, docs/scripts.md, .gitattributes, .gitignore,
+#   .no-mistakes.yaml, .pi/settings.json, .github/workflows/, assets/kcode/,
+#   docs/assets/, skill-snapshot/, bin/kcode-*.sh, and tests/kcode-*.test.sh.
 #
 # Usage: bin/kcode-sync.sh [<message>]
 #   Run from the live Firstmate home.
@@ -50,6 +50,8 @@ rsync -a --delete \
   --exclude='.no-mistakes.yaml' \
   --exclude='.pi/settings.json' \
   --exclude='README.md' \
+  --exclude='CONTRIBUTING.md' \
+  --exclude='docs/scripts.md' \
   --exclude='.github/workflows/' \
   --exclude='assets/kcode/' \
   --exclude='docs/assets/' \
@@ -72,9 +74,21 @@ rsync -a --delete \
   --exclude='*credential*' \
   --exclude='config/x-mode.env' \
   --exclude='config/cmux-socket-password' \
-  --exclude='data/kcode-rebuild-g7/' \
+  --exclude='data/**/*.bundle' \
+  --exclude='data/**/preview/' \
+  --exclude='data/**/previews/' \
+  --exclude='data/**/render/' \
+  --exclude='data/**/renders/' \
+  --exclude='data/**/screenshots/' \
+  --exclude='data/**/gifs/' \
   "$FM_HOME"/ "$KCODE_DIR"/
 
+if [ -d "$KCODE_DIR/data" ]; then
+  find "$KCODE_DIR/data" -type f -name '*.bundle' -delete
+  find "$KCODE_DIR/data" -depth -type d \
+    \( -name preview -o -name previews -o -name render -o -name renders \
+       -o -name screenshots -o -name gifs \) -exec rm -rf {} +
+fi
 rm -f "$KCODE_DIR/.github/WORKFLOWS-NOTE.md"
 
 # k-code tracks fleet config and memory, but never local products or runtime

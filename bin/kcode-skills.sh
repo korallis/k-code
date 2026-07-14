@@ -53,9 +53,31 @@ hash_check() {
   fi
 }
 
+trees_match() {
+  local left=$1 right=$2
+  diff -qr "$left" "$right" >/dev/null 2>&1 || return 1
+  python3 - "$left" "$right" <<'PY'
+import os
+import stat
+import sys
+from pathlib import Path
+
+left, right = map(Path, sys.argv[1:])
+for source in left.rglob("*"):
+    relative = source.relative_to(left)
+    destination = right / relative
+    if not destination.exists() or destination.is_symlink():
+        raise SystemExit(1)
+    source_mode = stat.S_IMODE(source.stat().st_mode)
+    destination_mode = stat.S_IMODE(destination.stat().st_mode)
+    if source_mode != destination_mode:
+        raise SystemExit(1)
+PY
+}
+
 verify_snapshot() {
   local listed actual tracked source target name declared duplicate front_name
-  for file in sources.tsv roots.tsv harness-managed.tsv restore.tsv checksums.sha256 README.md; do
+  for file in sources.tsv roots.tsv overlays.tsv harness-managed.tsv restore.tsv checksums.sha256 modes.tsv README.md; do
     [ -f "$SNAPSHOT/$file" ] || fail "missing skill-snapshot/$file"
   done
 
@@ -67,6 +89,126 @@ verify_snapshot() {
   [ "$listed" = "$actual" ] || fail 'checksums.sha256 does not cover the exact captured source file set'
   tracked=$(git ls-files -- .agents/skills skills skill-snapshot/vendor | LC_ALL=C sort)
   [ "$listed" = "$tracked" ] || fail 'captured source files must all be tracked for clean-clone restore'
+
+  python3 - "$ROOT" <<'PY'
+import csv
+import hashlib
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+snapshot = root / "skill-snapshot"
+
+
+def rows(name, fields):
+    path = snapshot / name
+    with path.open(encoding="utf-8", newline="") as handle:
+        parsed = [row for row in csv.reader(handle, delimiter="\t") if row and not row[0].startswith("#")]
+    if any(len(row) != fields for row in parsed):
+        raise SystemExit(f"kcode-skills: malformed provenance row in skill-snapshot/{name}")
+    if any(not value.strip() for row in parsed for value in row):
+        raise SystemExit(f"kcode-skills: empty provenance field in skill-snapshot/{name}")
+    return parsed
+
+root_rows = rows("roots.tsv", 5)
+expected_roots = {
+    "<repo>/.agents/skills", "<repo>/.claude/skills", "<repo>/skills",
+    "~/.agents/skills", "~/.pi/agent/skills", "~/.pi/agent/npm",
+    "~/.claude/skills", "~/.claude/plugins/.../vercel/0.44.0/skills",
+    "~/.codex/skills", "~/.codex/.tmp/plugins", "~/.grok/skills",
+    "~/.grok/bundled/skills", "~/.grok/marketplace-cache",
+    "~/.claude/skills",
+}
+actual_roots = [row[0] for row in root_rows]
+if len(actual_roots) != len(set(actual_roots)):
+    duplicates = {value for value in actual_roots if actual_roots.count(value) > 1}
+    if duplicates != {"~/.claude/skills"}:
+        raise SystemExit("kcode-skills: duplicate observed-root provenance")
+if set(actual_roots) != expected_roots:
+    raise SystemExit("kcode-skills: roots.tsv does not cover the reviewed root set")
+if any(row[2] == "cache" and "not captured" not in row[4].lower() for row in root_rows):
+    raise SystemExit("kcode-skills: excluded roots need an explicit exclusion treatment")
+
+source_rows = rows("sources.tsv", 7)
+sources = {row[0]: row for row in source_rows}
+if len(sources) != len(source_rows):
+    raise SystemExit("kcode-skills: duplicate source provenance id")
+source_paths = {row[5] for row in source_rows}
+expected_paths = {".agents/skills", "skills"} | {
+    str(path.relative_to(root)) for path in (snapshot / "vendor").iterdir() if path.is_dir()
+}
+if source_paths != expected_paths:
+    raise SystemExit("kcode-skills: sources.tsv does not cover captured roots and vendor directories")
+for source_id, kind, repository, revision, license_name, path, _ in source_rows:
+    if kind not in {"tracked", "vendored"} or not repository.startswith("https://"):
+        raise SystemExit(f"kcode-skills: invalid source provenance for {source_id}")
+    if not re.fullmatch(r"[0-9a-f]{40}", revision) or license_name.lower() in {"unknown", "none"}:
+        raise SystemExit(f"kcode-skills: invalid revision or license provenance for {source_id}")
+    if not (root / path).is_dir() or (kind == "vendored") != path.startswith("skill-snapshot/vendor/"):
+        raise SystemExit(f"kcode-skills: source provenance path mismatch for {source_id}")
+
+overlay_rows = rows("overlays.tsv", 7)
+if len({row[0] for row in overlay_rows}) != len(overlay_rows):
+    raise SystemExit("kcode-skills: duplicate overlay provenance id")
+for overlay_id, source_id, base_revision, target, correction, digest, _ in overlay_rows:
+    source = sources.get(source_id)
+    if source is None or source[3] != base_revision:
+        raise SystemExit(f"kcode-skills: overlay source revision mismatch for {overlay_id}")
+    target_path = root / target
+    try:
+        target_path.relative_to(root / source[5])
+    except ValueError:
+        raise SystemExit(f"kcode-skills: overlay target escapes source path for {overlay_id}")
+    if not correction.startswith("k-code:") or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise SystemExit(f"kcode-skills: invalid correction identity for {overlay_id}")
+    if not target_path.is_file() or hashlib.sha256(target_path.read_bytes()).hexdigest() != digest:
+        raise SystemExit(f"kcode-skills: overlay checksum mismatch for {overlay_id}")
+if [row[0] for row in overlay_rows].count("pi-max-effort") != 1:
+    raise SystemExit("kcode-skills: Pi max correction overlay provenance is missing")
+
+managed_rows = rows("harness-managed.tsv", 7)
+if len({(row[0], row[1]) for row in managed_rows}) != len(managed_rows):
+    raise SystemExit("kcode-skills: duplicate harness-managed provenance")
+if any(row[3].lower() in {"unknown", "none"} or not row[4] or not row[6] for row in managed_rows):
+    raise SystemExit("kcode-skills: incomplete harness-managed license or exclusion provenance")
+
+restore_rows = rows("restore.tsv", 3)
+vendor_roots = sorted(path for path in source_paths if path.startswith("skill-snapshot/vendor/"))
+restored_sources = {row[0] for row in restore_rows}
+for source, target, name in restore_rows:
+    owners = [path for path in vendor_roots if source == path or source.startswith(path + "/")]
+    if len(owners) != 1 or target not in {"generic", "claude", "codex", "grok"}:
+        raise SystemExit(f"kcode-skills: restore placement lacks unique source provenance: {source}")
+    if Path(source).name != name or not (root / source / "SKILL.md").is_file():
+        raise SystemExit(f"kcode-skills: restore placement mismatch: {source}")
+expected_skill_roots = set()
+for vendor_root in vendor_roots:
+    base = root / vendor_root
+    for skill_file in base.rglob("SKILL.md"):
+        relative = skill_file.parent.relative_to(base)
+        if "upstream" in relative.parts:
+            continue
+        candidate = str(skill_file.parent.relative_to(root))
+        if vendor_root.endswith("vercel-plugin") and relative.parts[:1] != ("skills",):
+            continue
+        expected_skill_roots.add(candidate)
+if restored_sources != expected_skill_roots:
+    raise SystemExit("kcode-skills: restore.tsv does not place every captured top-level skill source")
+
+mode_rows = rows("modes.tsv", 2)
+modes = {path: mode for mode, path in mode_rows}
+if len(modes) != len(mode_rows) or set(modes) != set(line.split(None, 1)[1] for line in (snapshot / "checksums.sha256").read_text().splitlines() if line.strip()):
+    raise SystemExit("kcode-skills: modes.tsv does not cover the exact checksum manifest")
+for path, mode in modes.items():
+    if mode not in {"100644", "100755"}:
+        raise SystemExit(f"kcode-skills: unsupported captured mode for {path}: {mode}")
+    actual = "100755" if os.stat(root / path).st_mode & stat.S_IXUSR else "100644"
+    if actual != mode:
+        raise SystemExit(f"kcode-skills: captured mode mismatch for {path}")
+PY
 
   if find skill-snapshot/vendor -type l -print -quit | grep -q .; then
     fail 'vendored skills must not contain symlinks'
@@ -149,7 +291,7 @@ verify_target_copies() {
     case "$source" in
       skill-snapshot/vendor/vercel-plugin/*) continue ;;
     esac
-    diff -qr "$ROOT/$source" "$directory/$name" >/dev/null 2>&1 \
+    trees_match "$ROOT/$source" "$directory/$name" \
       || fail "live $target skill differs from the captured source: $directory/$name"
   done < <(manifest_rows)
 }
@@ -376,7 +518,7 @@ preflight_skill() {
   local home=$1 source=$2 destination=$3
   assert_restore_path "$home" "$destination"
   if [ -e "$destination" ] || [ -L "$destination" ]; then
-    diff -qr "$source" "$destination" >/dev/null 2>&1 \
+    trees_match "$source" "$destination" \
       || fail "refusing to overwrite different installed skill: $destination"
   fi
   preflight_parent "$destination"
@@ -509,6 +651,7 @@ def copy_snapshot_directory(
         raise OSError(errno.ENOTDIR, "snapshot source is not a directory", relative)
     os.mkdir(name, mode=stat.S_IMODE(source_value.st_mode), dir_fd=parent_fd)
     destination_fd = os.open(name, flags, dir_fd=parent_fd)
+    os.fchmod(destination_fd, stat.S_IMODE(source_value.st_mode))
     destination_value = os.fstat(destination_fd)
     named_value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     if identity(destination_value) != identity(named_value):
@@ -550,6 +693,7 @@ def copy_snapshot_directory(
                 stat.S_IMODE(value.st_mode),
                 dir_fd=destination_fd,
             )
+            os.fchmod(destination_file_fd, stat.S_IMODE(value.st_mode))
             record_staging_entry(child_staged_relative, os.fstat(destination_file_fd))
             digest = hashlib.sha256()
             try:
@@ -668,7 +812,7 @@ def content_signature(parent_fd, name):
         value = os.stat(entry_name, dir_fd=owner_fd, follow_symlinks=False)
         kind = stat.S_IFMT(value.st_mode)
         if stat.S_ISLNK(value.st_mode):
-            records.append((relative, kind, os.readlink(entry_name, dir_fd=owner_fd)))
+            records.append((relative, kind, stat.S_IMODE(value.st_mode), os.readlink(entry_name, dir_fd=owner_fd)))
             return
         if stat.S_ISREG(value.st_mode):
             file_flags = os.O_RDONLY
@@ -686,7 +830,7 @@ def content_signature(parent_fd, name):
                     digest.update(block)
                 if identity(os.fstat(fd)) != identity(value):
                     raise OSError(errno.ESTALE, "file identity changed during validation", entry_name)
-                records.append((relative, kind, digest.hexdigest()))
+                records.append((relative, kind, stat.S_IMODE(value.st_mode), digest.hexdigest()))
             finally:
                 os.close(fd)
             return
@@ -695,13 +839,13 @@ def content_signature(parent_fd, name):
             try:
                 if identity(os.fstat(fd)) != identity(value):
                     raise OSError(errno.ESTALE, "directory identity changed during validation", entry_name)
-                records.append((relative, kind, None))
+                records.append((relative, kind, stat.S_IMODE(value.st_mode), None))
                 for child in sorted(os.listdir(fd)):
                     visit(fd, child, relative + (child,))
             finally:
                 os.close(fd)
             return
-        records.append((relative, kind, None))
+        records.append((relative, kind, stat.S_IMODE(value.st_mode), None))
 
     visit(parent_fd, name, ())
     return tuple(records)
@@ -942,7 +1086,7 @@ try:
     home_parts = tuple(part for part in home.split(os.path.sep) if part)
     staging_parent_fd = os.dup(root_fd)
     existing_depth = 0
-    for component in home_parts[:-1]:
+    for component in home_parts:
         try:
             child_fd = os.open(component, flags, dir_fd=staging_parent_fd)
         except FileNotFoundError:
@@ -1126,7 +1270,7 @@ verify_home() {
 
   while IFS=$'\t' read -r source target name; do
     directory=$(target_dir "$home" "$target")
-    diff -qr "$ROOT/$source" "$directory/$name" >/dev/null 2>&1 \
+    trees_match "$ROOT/$source" "$directory/$name" \
       || fail "restored skill differs or is missing: $directory/$name"
     count=$((count + 1))
   done < <(manifest_rows)
@@ -1144,7 +1288,7 @@ command=${1:-}
 case "$command" in
   inventory)
     [ "$#" -eq 1 ] || { usage; exit 2; }
-    for file in roots.tsv sources.tsv harness-managed.tsv restore.tsv; do
+    for file in roots.tsv sources.tsv overlays.tsv harness-managed.tsv restore.tsv modes.tsv; do
       printf '## skill-snapshot/%s\n' "$file"
       cat "$SNAPSHOT/$file"
     done
