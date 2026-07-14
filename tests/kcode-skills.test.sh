@@ -75,6 +75,28 @@ test_restore_refuses_different_existing_skill() {
   pass 'restore never overwrites a different user skill'
 }
 
+test_restore_preflights_late_marker_conflict() {
+  local temp home marker before after out rc
+  temp=$(fm_test_tmproot kcode-skills-late-collision)
+  home="$temp/home"
+  marker="$home/.codex/skills/.threejs-game-skills-managed"
+  mkdir -p "$(dirname "$marker")"
+  printf 'local manager state\n' > "$marker"
+  before=$(find "$home" -mindepth 1 -print | LC_ALL=C sort; shasum -a 256 "$marker")
+
+  rc=0
+  out=$($SKILLS restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore accepted a conflicting late manager marker'
+  assert_contains "$out" 'refusing to overwrite different manager marker' \
+    'late manager-marker collision did not explain its refusal'
+  after=$(find "$home" -mindepth 1 -print | LC_ALL=C sort; shasum -a 256 "$marker")
+  [ "$after" = "$before" ] || fail 'late restore conflict changed the target home'
+  assert_absent "$home/.agents" 'late restore conflict installed generic skills before failing'
+  assert_absent "$home/.claude" 'late restore conflict installed Claude skills before failing'
+  assert_absent "$home/.grok" 'late restore conflict installed Grok skills before failing'
+  pass 'restore preflights late conflicts before changing the target home'
+}
+
 test_manifest_covers_every_captured_source_once() {
   local tracked_count vendor_count source_count skill_doc_count restore_count
   tracked_count=$(find "$ROOT/.agents/skills" "$ROOT/skills" -mindepth 2 -maxdepth 2 \
@@ -139,5 +161,6 @@ EOF_JSON
 test_snapshot_verifies
 test_clean_home_restore
 test_restore_refuses_different_existing_skill
+test_restore_preflights_late_marker_conflict
 test_manifest_covers_every_captured_source_once
 test_live_inventory_detects_unclassified_skill

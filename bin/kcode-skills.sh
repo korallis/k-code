@@ -239,6 +239,37 @@ verify_live() {
   printf 'kcode-skills: live roots match the complete captured inventory.\n'
 }
 
+absolute_path() {
+  python3 - "$1" <<'PY'
+import os
+import sys
+
+print(os.path.realpath(sys.argv[1]))
+PY
+}
+
+preflight_parent() {
+  local path=$1 parent
+  parent=$(dirname "$path")
+  while [ ! -e "$parent" ] && [ ! -L "$parent" ]; do
+    [ "$(dirname "$parent")" != "$parent" ] || break
+    parent=$(dirname "$parent")
+  done
+  [ -d "$parent" ] || fail "restore parent is not a directory: $parent"
+}
+
+preflight_skill() {
+  local source=$1 destination=$2 temporary
+  if [ -e "$destination" ] || [ -L "$destination" ]; then
+    diff -qr "$source" "$destination" >/dev/null 2>&1 \
+      || fail "refusing to overwrite different installed skill: $destination"
+  fi
+  temporary="${destination}.kcode-tmp.$$"
+  [ ! -e "$temporary" ] && [ ! -L "$temporary" ] \
+    || fail "temporary restore path already exists: $temporary"
+  preflight_parent "$destination"
+}
+
 install_skill() {
   local source=$1 destination=$2 temporary
   if [ -e "$destination" ] || [ -L "$destination" ]; then
@@ -249,38 +280,68 @@ install_skill() {
 
   mkdir -p "$(dirname "$destination")"
   temporary="${destination}.kcode-tmp.$$"
-  [ ! -e "$temporary" ] || fail "temporary restore path already exists: $temporary"
   cp -R "$source" "$temporary"
   mv "$temporary" "$destination"
 }
 
-write_threejs_marker() {
-  local home=$1 target=$2 directory marker expected
+threejs_marker_content() {
+  local target=$1
+  manifest_rows | awk -F '\t' -v target="$target" \
+    '$2 == target && $1 ~ /vendor\/threejs-game-skills\// {print $3}' | LC_ALL=C sort
+}
+
+preflight_threejs_marker() {
+  local home=$1 target=$2 directory marker temporary expected
   directory=$(target_dir "$home" "$target")
   marker="$directory/.threejs-game-skills-managed"
-  expected=$(manifest_rows | awk -F '\t' -v target="$target" \
-    '$2 == target && $1 ~ /vendor\/threejs-game-skills\// {print $3}' | LC_ALL=C sort)
+  temporary="${marker}.kcode-tmp.$$"
+  expected=$(threejs_marker_content "$target")
   [ -n "$expected" ] || return 0
-  mkdir -p "$directory"
-  if [ -e "$marker" ]; then
+  if [ -e "$marker" ] || [ -L "$marker" ]; then
     cmp -s "$marker" <(printf '%s\n' "$expected") \
       || fail "refusing to overwrite different manager marker: $marker"
-  else
-    printf '%s\n' "$expected" > "$marker"
   fi
+  [ ! -e "$temporary" ] && [ ! -L "$temporary" ] \
+    || fail "temporary restore path already exists: $temporary"
+  preflight_parent "$marker"
+}
+
+write_threejs_marker() {
+  local home=$1 target=$2 directory marker temporary expected
+  directory=$(target_dir "$home" "$target")
+  marker="$directory/.threejs-game-skills-managed"
+  expected=$(threejs_marker_content "$target")
+  [ -n "$expected" ] || return 0
+  if [ -e "$marker" ] || [ -L "$marker" ]; then
+    cmp -s "$marker" <(printf '%s\n' "$expected") \
+      || fail "refusing to overwrite different manager marker: $marker"
+    return 0
+  fi
+  mkdir -p "$directory"
+  temporary="${marker}.kcode-tmp.$$"
+  printf '%s\n' "$expected" > "$temporary"
+  mv "$temporary" "$marker"
 }
 
 restore_home() {
   local home=$1 source target name directory count=0
   [ -n "$home" ] || fail 'restore requires a non-empty --home path'
-  mkdir -p "$home"
-  home=$(cd "$home" && pwd -P)
+  home=$(absolute_path "$home")
   verify_snapshot >/dev/null
+  preflight_parent "$home"
 
   while IFS=$'\t' read -r source target name; do
     directory=$(target_dir "$home" "$target")
-    install_skill "$ROOT/$source" "$directory/$name"
+    preflight_skill "$ROOT/$source" "$directory/$name"
     count=$((count + 1))
+  done < <(manifest_rows)
+  preflight_threejs_marker "$home" claude
+  preflight_threejs_marker "$home" codex
+
+  mkdir -p "$home"
+  while IFS=$'\t' read -r source target name; do
+    directory=$(target_dir "$home" "$target")
+    install_skill "$ROOT/$source" "$directory/$name"
   done < <(manifest_rows)
 
   write_threejs_marker "$home" claude
