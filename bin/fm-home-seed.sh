@@ -931,6 +931,9 @@ seed_home() {
   validate_operational_dirs "$home" || return 1
   validate_seed_leaf_files "$home" || return 1
   if [ "$no_projects" -eq 1 ]; then
+    # A newly cloned k-code home can carry the primary's tracked navigation
+    # registry. It is clone seed data, not preexisting secondmate project data.
+    [ "$SEED_HOME_CREATED" -ne 1 ] || rm -f "$home/data/projects.md"
     refuse_populated_projectless_home "$home" || return 1
     if [ -f "$SEED_PARENT_BRIEF" ]; then
       refuse_projectful_projectless_charter "$id" "$SEED_PARENT_BRIEF" || return 1

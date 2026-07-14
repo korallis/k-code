@@ -19,6 +19,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install pinned ShellCheck
+        run: |
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+
+      - run: bin/fm-lint.sh
+
       - name: Operating-home integrity
         run: bin/kcode-integrity.sh
 
