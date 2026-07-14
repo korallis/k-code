@@ -345,41 +345,136 @@ preflight_threejs_marker() {
   preflight_parent "$marker"
 }
 
-create_parent_dirs() {
-  local path=$1 log=$2 parent stack='' directory
-  parent=$(dirname "$path")
-  while [ ! -d "$parent" ]; do
-    [ ! -e "$parent" ] && [ ! -L "$parent" ] \
-      || return 1
-    stack="$parent"$'\n'"$stack"
-    parent=$(dirname "$parent")
-  done
-  while IFS= read -r directory; do
-    [ -n "$directory" ] || continue
-    printf '%s\n' "$directory" >> "$log"
-    mkdir "$directory"
-  done <<< "$stack"
-}
+promote_restore_plan() {
+  local home=$1 plan=$2
+  python3 - "$home" "$plan" <<'PY'
+import ctypes
+import errno
+import os
+import platform
+import stat
+import sys
 
-rollback_restore() {
-  local transaction=$1 created_paths=$2 created_dirs=$3 path
-  set +e
-  if [ -f "$created_paths" ]; then
-    while IFS= read -r path; do
-      [ -n "$path" ] && rm -rf -- "$path"
-    done < <(awk '{line[NR]=$0} END {for (i=NR; i>0; i--) print line[i]}' "$created_paths")
-  fi
-  if [ -f "$created_dirs" ]; then
-    while IFS= read -r path; do
-      [ -n "$path" ] && rmdir -- "$path" 2>/dev/null
-    done < <(awk '{line[NR]=$0} END {for (i=NR; i>0; i--) print line[i]}' "$created_dirs")
-  fi
-  rm -rf -- "$transaction"
+home, plan = map(os.path.abspath, sys.argv[1:])
+flags = os.O_RDONLY | os.O_DIRECTORY
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+libc = ctypes.CDLL(None, use_errno=True)
+system = platform.system()
+created_dirs = []
+created_paths = []
+fds = {}
+
+
+def identity(value):
+    return value.st_dev, value.st_ino
+
+
+def rename_noreplace(source, parent_fd, name):
+    source_b = os.fsencode(source)
+    name_b = os.fsencode(name)
+    if system == "Darwin" and hasattr(libc, "renameatx_np"):
+        result = libc.renameatx_np(-2, source_b, parent_fd, name_b, 0x00000004)
+    elif system == "Linux" and hasattr(libc, "renameat2"):
+        result = libc.renameat2(-100, source_b, parent_fd, name_b, 1)
+    else:
+        raise OSError(errno.ENOTSUP, "atomic no-replace rename is unavailable")
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), name)
+
+
+def open_directory(parts):
+    key = tuple(parts)
+    if key in fds:
+        return fds[key]
+    parent_parts = key[:-1]
+    parent_fd = open_directory(parent_parts)
+    name = key[-1]
+    try:
+        fd = os.open(name, flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        os.mkdir(name, dir_fd=parent_fd)
+        value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        created_dirs.append((parent_fd, name, identity(value)))
+        fd = os.open(name, flags, dir_fd=parent_fd)
+    fds[key] = fd
+    return fd
+
+
+def remove_tree(parent_fd, name):
+    fd = os.open(name, flags, dir_fd=parent_fd)
+    try:
+        for entry in os.scandir(fd):
+            value = entry.stat(follow_symlinks=False)
+            if stat.S_ISDIR(value.st_mode):
+                remove_tree(fd, entry.name)
+            else:
+                os.unlink(entry.name, dir_fd=fd)
+    finally:
+        os.close(fd)
+    os.rmdir(name, dir_fd=parent_fd)
+
+
+def rollback():
+    for parent_fd, name, expected in reversed(created_paths):
+        try:
+            value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if identity(value) != expected:
+                continue
+            if stat.S_ISDIR(value.st_mode):
+                remove_tree(parent_fd, name)
+            else:
+                os.unlink(name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+    for parent_fd, name, expected in reversed(created_dirs):
+        try:
+            value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if identity(value) == expected:
+                os.rmdir(name, dir_fd=parent_fd)
+        except (FileNotFoundError, OSError):
+            pass
+
+
+root_fd = os.open(os.path.sep, flags)
+fds[()] = root_fd
+try:
+    home_parts = tuple(part for part in home.split(os.path.sep) if part)
+    open_directory(home_parts)
+    with open(plan, encoding="utf-8") as rows:
+        for number, row in enumerate(rows, 1):
+            source, destination = row.rstrip("\n").split("\t", 1)
+            relative = os.path.relpath(destination, home)
+            if relative == os.pardir or relative.startswith(os.pardir + os.path.sep):
+                raise OSError(errno.EPERM, "restore destination escapes requested home", destination)
+            parts = tuple(part for part in relative.split(os.path.sep) if part)
+            parent_fd = open_directory(home_parts + parts[:-1])
+            name = parts[-1]
+            try:
+                os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise FileExistsError(errno.EEXIST, "restore destination changed after preflight", destination)
+            rename_noreplace(source, parent_fd, name)
+            value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            created_paths.append((parent_fd, name, identity(value)))
+            fail_after = os.environ.get("KCODE_RESTORE_TEST_FAIL_AFTER")
+            if fail_after and number == int(fail_after):
+                raise OSError(errno.EIO, "injected restore promotion failure", destination)
+except Exception:
+    rollback()
+    raise
+finally:
+    for fd in reversed(tuple(fds.values())):
+        os.close(fd)
+PY
 }
 
 restore_home() {
   local home=$1 requested_home source target name directory destination expected stage link
-  local count=0 transaction transaction_parent plan created_paths created_dirs transaction_active=0
+  local count=0 transaction transaction_parent plan transaction_active=0
   [ -n "$home" ] || fail 'restore requires a non-empty --home path'
   case "$home" in
     *$'\t'*|*$'\n'*) fail 'restore home must not contain tabs or newlines' ;;
@@ -411,13 +506,9 @@ PY
   done
   transaction=$(mktemp -d "$transaction_parent/.kcode-restore.XXXXXX")
   plan="$transaction/plan.tsv"
-  created_paths="$transaction/created-paths"
-  created_dirs="$transaction/created-dirs"
   : > "$plan"
-  : > "$created_paths"
-  : > "$created_dirs"
   transaction_active=1
-  trap 'if [ "$transaction_active" -eq 1 ]; then rollback_restore "$transaction" "$created_paths" "$created_dirs"; fi' EXIT
+  trap 'if [ "$transaction_active" -eq 1 ]; then rm -rf -- "$transaction"; fi' EXIT
 
   count=0
   while IFS=$'\t' read -r source target name; do
@@ -443,13 +534,10 @@ PY
     fi
   done
 
-  while IFS=$'\t' read -r stage destination; do
-    [ ! -e "$destination" ] && [ ! -L "$destination" ] \
-      || fail "restore destination changed after preflight: $destination"
-    create_parent_dirs "$destination" "$created_dirs"
-    printf '%s\n' "$destination" >> "$created_paths"
-    mv "$stage" "$destination"
-  done < "$plan"
+  if [ -n "${KCODE_RESTORE_TEST_HOOK:-}" ]; then
+    "$KCODE_RESTORE_TEST_HOOK" "$home"
+  fi
+  promote_restore_plan "$home" "$plan"
 
   transaction_active=0
   trap - EXIT

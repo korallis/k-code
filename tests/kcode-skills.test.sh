@@ -105,30 +105,77 @@ test_restore_preflights_late_marker_conflict() {
 }
 
 test_restore_rolls_back_late_write_failure() {
-  local temp home fakebin before after out rc
+  local temp home before after out rc
   temp=$(physical_temp_root kcode-skills-write-failure)
   home="$temp/home"
-  fakebin="$temp/fakebin"
-  mkdir -p "$home" "$fakebin"
+  mkdir -p "$home"
   printf 'preserve me\n' > "$home/existing.txt"
-  cat > "$fakebin/mv" <<'EOF_MV'
-#!/usr/bin/env bash
-case "${*: -1}" in
-  */.claude/skills/workflow) exit 73 ;;
-esac
-exec /bin/mv "$@"
-EOF_MV
-  chmod +x "$fakebin/mv"
   before=$(find "$home" -mindepth 1 -print -exec shasum -a 256 {} \; 2>/dev/null | LC_ALL=C sort)
 
   rc=0
-  out=$(PATH="$fakebin:$PATH" "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  out=$(KCODE_RESTORE_TEST_FAIL_AFTER=60 "$SKILLS" restore --home "$home" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail 'restore ignored a late promotion failure'
   after=$(find "$home" -mindepth 1 -print -exec shasum -a 256 {} \; 2>/dev/null | LC_ALL=C sort)
   [ "$after" = "$before" ] || fail "late promotion failure left a partial restore: $out"
   [ -z "$(find "$temp" -maxdepth 1 -name '.kcode-restore.*' -print -quit)" ] \
     || fail 'late promotion failure left transaction staging behind'
   pass 'late promotion failure rolls back every restored path'
+}
+
+write_symlink_swap_hook() {
+  local hook=$1 outside=$2
+  cat > "$hook" <<EOF_HOOK
+#!/usr/bin/env bash
+set -euo pipefail
+home=\$1
+mkdir -p "$outside"
+ln -s "$outside" "\$home/.claude"
+EOF_HOOK
+  chmod +x "$hook"
+}
+
+test_restore_revalidates_promotion_ancestors() {
+  local temp home outside hook out rc
+  temp=$(physical_temp_root kcode-skills-promotion-symlink)
+  home="$temp/home"
+  outside="$temp/outside"
+  hook="$temp/swap-parent"
+  mkdir -p "$home"
+  write_symlink_swap_hook "$hook" "$outside"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_HOOK="$hook" "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore followed an ancestor symlink introduced after preflight'
+  [ -L "$home/.claude" ] || fail 'restore rollback removed the foreign symlink'
+  [ -z "$(find "$outside" -mindepth 1 -print -quit)" ] \
+    || fail "restore wrote through the post-preflight symlink: $out"
+  assert_absent "$home/.agents" 'promotion symlink failure left earlier restored skills'
+  assert_absent "$home/.grok" 'promotion symlink failure left later restored skills'
+  pass 'promotion revalidates ancestors without following late symlinks'
+}
+
+test_restore_preserves_concurrent_destination() {
+  local temp home hook destination out rc
+  temp=$(physical_temp_root kcode-skills-concurrent-destination)
+  home="$temp/home"
+  hook="$temp/create-destination"
+  destination="$home/.claude/skills/workflow"
+  mkdir -p "$home"
+  cat > "$hook" <<'EOF_HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "$1/.claude/skills/workflow"
+printf 'foreign concurrent object\n' > "$1/.claude/skills/workflow/SKILL.md"
+EOF_HOOK
+  chmod +x "$hook"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_HOOK="$hook" "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore replaced a destination created after preflight'
+  [ "$(cat "$destination/SKILL.md")" = 'foreign concurrent object' ] \
+    || fail "rollback removed or changed a concurrent destination: $out"
+  assert_absent "$home/.agents" 'concurrent destination failure left earlier restored skills'
+  pass 'rollback preserves paths the transaction did not create'
 }
 
 test_restore_rejects_symlinked_ancestor() {
@@ -250,6 +297,8 @@ test_clean_home_restore
 test_restore_refuses_different_existing_skill
 test_restore_preflights_late_marker_conflict
 test_restore_rolls_back_late_write_failure
+test_restore_revalidates_promotion_ancestors
+test_restore_preserves_concurrent_destination
 test_restore_rejects_symlinked_ancestor
 test_restore_rejects_symlink_above_nonexistent_home
 test_verify_home_rejects_stale_marker
