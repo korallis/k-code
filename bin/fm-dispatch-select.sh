@@ -158,11 +158,36 @@ load_quota() {
     fi
   fi
 
-  if ! printf '%s\n' "$quota_json" | jq -e 'type == "object" and (.providers | type) == "array"' >/dev/null 2>&1; then
-    log "quota-axi returned unparseable JSON"
+  if ! printf '%s\n' "$quota_json" | jq -e '
+    type == "object"
+    and (.providers | type) == "array"
+    and all(.providers[];
+      type == "object"
+      and (.provider | type) == "string"
+      and ((.state? == null) or
+        ((.state | type) == "object"
+          and ((.state.status? == null) or ((.state.status | type) == "string"))))
+      and (.windows | type) == "array"
+      and all(.windows[];
+        type == "object"
+        and (.id | type) == "string"
+        and ((.percentRemaining? == null) or
+          ((.percentRemaining | type) == "number"))))
+  ' >/dev/null 2>&1; then
+    log "quota-axi returned unparseable JSON or malformed quota schema"
     return 1
   fi
   return 0
+}
+
+all_fallback_profiles() {
+  printf '%s\n' "$profiles_json" | jq -c '
+    def clean($p):
+      {harness: $p.harness}
+      + (if ($p.model? | type) == "string" then {model: $p.model} else {} end)
+      + (if ($p.effort? | type) == "string" then {effort: $p.effort} else {} end);
+    map(if .quota? != null then clean(.quota.fallback) else clean(.) end)
+  '
 }
 
 select_strategy=$SELECT_OVERRIDE
@@ -193,16 +218,10 @@ if [ "$select_strategy" = all ]; then
   fi
   if ! load_quota; then
     log "using declared fallbacks for guarded profiles"
-    printf '%s\n' "$profiles_json" | jq -c '
-      def clean($p):
-        {harness: $p.harness}
-        + (if ($p.model? | type) == "string" then {model: $p.model} else {} end)
-        + (if ($p.effort? | type) == "string" then {effort: $p.effort} else {} end);
-      map(if .quota? != null then clean(.quota.fallback) else clean(.) end)
-    '
+    all_fallback_profiles
     exit 0
   fi
-  printf '%s\n' "$quota_json" | jq -c --argjson profiles "$profiles_json" '
+  if ! resolved_profiles=$(printf '%s\n' "$quota_json" | jq -ce --argjson profiles "$profiles_json" '
     def clean($p):
       {harness: $p.harness}
       + (if ($p.model? | type) == "string" then {model: $p.model} else {} end)
@@ -211,8 +230,8 @@ if [ "$select_strategy" = all ]; then
       if $p.quota? == null then clean($p)
       else
         ($p.quota) as $guard
-        | ([.providers[]? | select(.provider == $guard.provider)][0]) as $provider
-        | ([($provider.windows // [])[]? | select(.id == $guard.window)][0]) as $window
+        | ([.providers[] | select(.provider == $guard.provider)][0]) as $provider
+        | ([($provider.windows // [])[] | select(.id == $guard.window)][0]) as $window
         | if $provider != null
             and (($provider.state.status? // "") == "fresh")
             and $window != null
@@ -223,7 +242,13 @@ if [ "$select_strategy" = all ]; then
           end
       end;
     . as $quota | [$profiles[] as $profile | $quota | resolve($profile)]
-  '
+    | select(length == ($profiles | length))
+  ' 2>/dev/null); then
+    log "quota-axi data could not be evaluated; using declared fallbacks for guarded profiles"
+    all_fallback_profiles
+    exit 0
+  fi
+  printf '%s\n' "$resolved_profiles"
   exit 0
 fi
 

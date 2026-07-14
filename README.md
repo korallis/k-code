@@ -44,7 +44,7 @@ Product checkouts belong only in each operator's ignored local `projects/` direc
 | Area | [kunchenguid/firstmate](https://github.com/kunchenguid/firstmate) | `korallis/k-code` |
 | --- | --- | --- |
 | Primary purpose | Reusable Firstmate distribution for any operator | Reproducible, captain-specific operating home for this fleet |
-| Shared supervisor core | Owns `AGENTS.md`, core `bin/`, `.agents/skills`, public `skills`, docs, and tests | Mirrors those surfaces from the live Firstmate home |
+| Shared supervisor core | Owns `AGENTS.md`, core `bin/`, `.agents/skills`, public `skills`, docs, and tests | Mirrors upstream surfaces while protecting the fork's dispatch contract |
 | Routing and local configuration | Kept local and ignored by the shared distribution | Tracks the public-safe routing policy and selected operating-home configuration under `config/` |
 | Durable operating memory | Kept local and ignored by the shared distribution | Tracks curated captain preferences, learnings, backlog history, briefs, and reports under `data/` |
 | Fleet additions | General upstream feature set | Adds the validation dashboard and launcher, fleet-specific routing, operating records, and fork packaging tools |
@@ -63,20 +63,21 @@ The distinction matters because synchronization deliberately overwrites mirrored
 
 ### Mirrored from the live Firstmate home
 
-- `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, and `.tasks.toml`.
-- Upstream-derived lifecycle tooling under `bin/`, except for the protected `kcode-*` packaging scripts.
+- `.tasks.toml`.
+- Upstream-derived lifecycle tooling under `bin/`, except for protected packaging and dispatch files.
 - Firstmate's project-local internal skills under `.agents/skills` and public installer skills under `skills`.
 - Harness hooks and extensions under `.claude`, `.codex`, `.grok`, `.opencode`, and `.pi`.
-- Shared documentation and test coverage under `docs/` and `tests/`, except for protected k-code packaging tests.
-- Public-safe fleet routing under `config/` and durable operating records under `data/`.
+- Shared documentation and test coverage under `docs/` and `tests/`, except for protected packaging and dispatch surfaces.
+- Public-safe operating configuration under `config/` and durable operating records under `data/`.
 
 ### Owned by k-code
 
-- This README plus the fork's `.gitattributes` and `.gitignore` contracts.
+- This README, `CONTRIBUTING.md`, `docs/scripts.md`, and the fork's `.gitattributes` and `.gitignore` contracts.
 - The focused `.no-mistakes.yaml` validation profile, [`.pi/settings.json`](.pi/settings.json) provider pins, and workflow under `.github/workflows/`.
 - Fork artwork under `assets/kcode/` and `docs/assets/`.
 - The complete skill snapshot under [`skill-snapshot/`](skill-snapshot/).
 - [`bin/kcode-sync.sh`](bin/kcode-sync.sh), [`bin/kcode-skills.sh`](bin/kcode-skills.sh), [`bin/kcode-integrity.sh`](bin/kcode-integrity.sh), and their focused tests.
+- The executable dispatch contract: `AGENTS.md`, `CLAUDE.md`, `config/crew-dispatch.json`, `bin/fm-bootstrap.sh`, `bin/fm-dispatch-select.sh`, `docs/configuration.md`, `tests/fm-bootstrap.test.sh`, and `tests/fm-dispatch-select.test.sh`.
 
 The synchronization script excludes each owned surface explicitly so a later live-home mirror cannot erase or replace it.
 
@@ -341,7 +342,7 @@ Shared improvements should be developed and reviewed in [kunchenguid/firstmate](
 
 The live Firstmate home then fast-forwards or otherwise reviews the upstream change, applies any fleet-specific adjustment, and runs `bin/kcode-sync.sh` to refresh the mirrored surfaces here.
 
-Fork-owned presentation, packaging, skill inventory, and integrity checks remain protected during that mirror.
+Fork-owned presentation, packaging, skill inventory, dispatch contract, and integrity checks remain protected during that mirror.
 
 This split keeps upstream broadly reusable while keeping this fleet reproducible.
 

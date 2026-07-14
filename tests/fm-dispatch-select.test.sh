@@ -207,6 +207,29 @@ test_all_guard_falls_back_when_quota_is_unparseable() {
   pass "all fan-out selects the declared fallback when quota is unparseable"
 }
 
+test_all_guard_falls_back_for_malformed_nested_quota() {
+  local quota case_name fixture out err
+  quota="$TMP_ROOT/fable-malformed.json"
+  while IFS='|' read -r case_name fixture; do
+    printf '%s\n' "$fixture" > "$quota"
+    out=$("$ROOT/bin/fm-dispatch-select.sh" --quota-json "$quota" "$fanout_rule" 2>"$TMP_ROOT/fable-malformed.err")
+    err=$(cat "$TMP_ROOT/fable-malformed.err")
+    [ "$out" = "$fanout_opus" ] \
+      || fail "$case_name quota should preserve the complete fallback fan-out, got: $out"
+    assert_contains "$err" "malformed quota schema" \
+      "$case_name quota fallback should identify the malformed nested schema"
+  done <<'CASES'
+provider is not an object|{"providers":["claude"]}
+provider name is not a string|{"providers":[{"provider":7,"state":{"status":"fresh"},"windows":[]}]}
+provider state is not an object|{"providers":[{"provider":"claude","state":"fresh","windows":[]}]}
+provider windows is not an array|{"providers":[{"provider":"claude","state":{"status":"fresh"},"windows":{}}]}
+window is not an object|{"providers":[{"provider":"claude","state":{"status":"fresh"},"windows":[7]}]}
+window id is not a string|{"providers":[{"provider":"claude","state":{"status":"fresh"},"windows":[{"id":7,"percentRemaining":1}]}]}
+window percentage is not numeric|{"providers":[{"provider":"claude","state":{"status":"fresh"},"windows":[{"id":"model:fable","percentRemaining":"1"}]}]}
+CASES
+  pass "all fan-out rejects malformed nested quota without dropping profiles"
+}
+
 test_backward_compatible_first_selection() {
   local fakebin marker out single array_rule
   fakebin=$(fm_fakebin "$TMP_ROOT/no-call")
@@ -243,6 +266,7 @@ test_all_guard_falls_back_when_fable_is_exhausted
 test_all_guard_falls_back_when_fable_quota_is_missing
 test_all_guard_falls_back_when_fable_quota_is_stale
 test_all_guard_falls_back_when_quota_is_unparseable
+test_all_guard_falls_back_for_malformed_nested_quota
 test_backward_compatible_first_selection
 
 echo "# all fm-dispatch-select tests passed"

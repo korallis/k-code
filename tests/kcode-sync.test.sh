@@ -24,6 +24,8 @@ build_fixture() {
     "$live/projects/source-product" \
     "$live/state"
   printf 'live tool\n' > "$live/bin/live-tool.sh"
+  printf 'upstream dispatch validation\n' > "$live/bin/fm-bootstrap.sh"
+  printf 'upstream dispatch resolver\n' > "$live/bin/fm-dispatch-select.sh"
   printf 'must not overwrite fork sync\n' > "$live/bin/kcode-sync.sh"
   printf '%s\n' '---' 'name: live-skill' 'description: fixture' '---' \
     > "$live/.agents/skills/live-skill/SKILL.md"
@@ -32,7 +34,7 @@ build_fixture() {
   printf 'upstream workflow\n' > "$live/.github/workflows/live.yml"
   printf '{"packages":["npm:unreviewed"]}\n' > "$live/.pi/settings.json"
   printf 'package cache\n' > "$live/.pi/npm/package-lock.json"
-  printf '{}\n' > "$live/config/crew-dispatch.json"
+  printf 'upstream routing\n' > "$live/config/crew-dispatch.json"
   printf 'upstream data policy\n' > "$live/config/kcode-data-policy.tsv"
   printf 'durable\n' > "$live/data/backlog.md"
   printf 'safe durable task memory\n' > "$live/data/ordinary-task/brief.md"
@@ -44,9 +46,14 @@ build_fixture() {
   printf 'source product\n' > "$live/projects/source-product/only-source.txt"
   printf 'runtime\n' > "$live/state/task.status"
   printf 'live README\n' > "$live/README.md"
+  printf 'upstream agent contract\n' > "$live/AGENTS.md"
+  printf 'upstream agent compatibility contract\n' > "$live/CLAUDE.md"
   printf 'upstream contributing\n' > "$live/CONTRIBUTING.md"
-  mkdir -p "$live/docs"
+  mkdir -p "$live/docs" "$live/tests"
+  printf 'upstream dispatch schema\n' > "$live/docs/configuration.md"
   printf 'upstream scripts guide\n' > "$live/docs/scripts.md"
+  printf 'upstream dispatch validation tests\n' > "$live/tests/fm-bootstrap.test.sh"
+  printf 'upstream dispatch resolver tests\n' > "$live/tests/fm-dispatch-select.test.sh"
   printf 'upstream attributes\n' > "$live/.gitattributes"
   printf 'upstream validation\n' > "$live/.no-mistakes.yaml"
   git -C "$live" add -A
@@ -65,12 +72,16 @@ build_fixture() {
     "$destination/skill-snapshot" \
     "$destination/projects/legacy"
   printf 'fork README\n' > "$destination/README.md"
+  printf 'fork agent contract\n' > "$destination/AGENTS.md"
+  printf 'fork agent compatibility contract\n' > "$destination/CLAUDE.md"
   printf 'fork contributing\n' > "$destination/CONTRIBUTING.md"
+  printf 'fork dispatch schema\n' > "$destination/docs/configuration.md"
   printf 'fork scripts guide\n' > "$destination/docs/scripts.md"
   printf 'fork attributes\n' > "$destination/.gitattributes"
   printf 'fork validation\n' > "$destination/.no-mistakes.yaml"
   mkdir -p "$destination/config"
   cp "$ROOT/config/kcode-data-policy.tsv" "$destination/config/kcode-data-policy.tsv"
+  printf 'fork routing\n' > "$destination/config/crew-dispatch.json"
   printf '{"packages":["npm:pi-xai-oauth@1.3.3","npm:pi-claude-bridge@0.6.2"]}\n' \
     > "$destination/.pi/settings.json"
   printf 'old ignore\n' > "$destination/.gitignore"
@@ -78,7 +89,11 @@ build_fixture() {
   printf 'fork art\n' > "$destination/assets/kcode/sentinel.txt"
   printf 'fork docs art\n' > "$destination/docs/assets/sentinel.txt"
   printf 'fork skill snapshot\n' > "$destination/skill-snapshot/sentinel.txt"
+  printf 'fork dispatch validation\n' > "$destination/bin/fm-bootstrap.sh"
+  printf 'fork dispatch resolver\n' > "$destination/bin/fm-dispatch-select.sh"
   printf 'protected sync\n' > "$destination/bin/kcode-sync.sh"
+  printf 'fork dispatch validation tests\n' > "$destination/tests/fm-bootstrap.test.sh"
+  printf 'fork dispatch resolver tests\n' > "$destination/tests/fm-dispatch-select.test.sh"
   printf 'protected test\n' > "$destination/tests/kcode-sync.test.sh"
   printf 'legacy local checkout\n' > "$destination/projects/legacy/local.txt"
   mkdir -p "$destination/data/ordinary-task/render" "$destination/data/ordinary-task/ReNDeRs"
@@ -127,8 +142,14 @@ test_sync_preserves_local_products_but_removes_tracking() {
     'dry-run sync did not stop before commit and push'
   [ "$before" = "$after" ] || fail 'dry-run sync created a commit'
   [ "$(cat "$destination/README.md")" = 'fork README' ] || fail 'sync overwrote fork README'
+  [ "$(cat "$destination/AGENTS.md")" = 'fork agent contract' ] \
+    || fail 'sync overwrote the fork dispatch operating contract'
+  [ "$(cat "$destination/CLAUDE.md")" = 'fork agent compatibility contract' ] \
+    || fail 'sync overwrote the fork dispatch compatibility contract'
   [ "$(cat "$destination/CONTRIBUTING.md")" = 'fork contributing' ] \
     || fail 'sync overwrote fork contributing guidance'
+  [ "$(cat "$destination/docs/configuration.md")" = 'fork dispatch schema' ] \
+    || fail 'sync overwrote the fork dispatch schema'
   [ "$(cat "$destination/docs/scripts.md")" = 'fork scripts guide' ] \
     || fail 'sync overwrote fork scripts guidance'
   [ "$(cat "$destination/.gitattributes")" = 'fork attributes' ] \
@@ -139,7 +160,17 @@ test_sync_preserves_local_products_but_removes_tracking() {
     'sync overwrote the fork-owned Pi package declarations'
   cmp -s "$destination/config/kcode-data-policy.tsv" "$ROOT/config/kcode-data-policy.tsv" \
     || fail 'sync overwrote the fork-owned data policy'
+  [ "$(cat "$destination/config/crew-dispatch.json")" = 'fork routing' ] \
+    || fail 'sync overwrote the fork-owned dispatch policy'
   assert_absent "$destination/.pi/npm" 'sync copied the live Pi package store'
+  [ "$(cat "$destination/bin/fm-bootstrap.sh")" = 'fork dispatch validation' ] \
+    || fail 'sync overwrote the fork dispatch validator'
+  [ "$(cat "$destination/bin/fm-dispatch-select.sh")" = 'fork dispatch resolver' ] \
+    || fail 'sync overwrote the fork dispatch resolver'
+  [ "$(cat "$destination/tests/fm-bootstrap.test.sh")" = 'fork dispatch validation tests' ] \
+    || fail 'sync overwrote the fork dispatch validation tests'
+  [ "$(cat "$destination/tests/fm-dispatch-select.test.sh")" = 'fork dispatch resolver tests' ] \
+    || fail 'sync overwrote the fork dispatch resolver tests'
   [ "$(cat "$destination/bin/kcode-sync.sh")" = 'protected sync' ] \
     || fail 'sync overwrote its protected fork script'
   assert_present "$destination/.github/workflows/integrity.yml" 'sync removed fork integrity CI'

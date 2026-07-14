@@ -12,8 +12,12 @@
 # k-code-owned surfaces are not overwritten:
 #   README.md, CONTRIBUTING.md, docs/scripts.md, .gitattributes, .gitignore,
 #   .no-mistakes.yaml, .pi/settings.json, config/kcode-data-policy.tsv,
-#   .github/workflows/, assets/kcode/,
-#   docs/assets/, skill-snapshot/, bin/kcode-*.sh, and tests/kcode-*.test.sh.
+#   .github/workflows/, assets/kcode/, docs/assets/, skill-snapshot/,
+#   bin/kcode-*.sh, and tests/kcode-*.test.sh.
+# The fork-owned dispatch contract is also protected as one exact surface set:
+#   AGENTS.md, CLAUDE.md, config/crew-dispatch.json,
+#   bin/fm-bootstrap.sh, bin/fm-dispatch-select.sh, docs/configuration.md,
+#   tests/fm-bootstrap.test.sh, and tests/fm-dispatch-select.test.sh.
 #
 # Usage: bin/kcode-sync.sh [<message>]
 #   Run from the live Firstmate home.
@@ -89,15 +93,23 @@ rsync -a --delete \
   --exclude='.no-mistakes.yaml' \
   --exclude='.pi/settings.json' \
   --exclude='config/kcode-data-policy.tsv' \
+  --exclude='config/crew-dispatch.json' \
   --exclude='README.md' \
+  --exclude='AGENTS.md' \
+  --exclude='CLAUDE.md' \
   --exclude='CONTRIBUTING.md' \
+  --exclude='docs/configuration.md' \
   --exclude='docs/scripts.md' \
   --exclude='.github/workflows/' \
   --exclude='assets/kcode/' \
   --exclude='docs/assets/' \
   --exclude='skill-snapshot/' \
   --exclude='bin/kcode-*.sh' \
+  --exclude='bin/fm-bootstrap.sh' \
+  --exclude='bin/fm-dispatch-select.sh' \
   --exclude='tests/kcode-*.test.sh' \
+  --exclude='tests/fm-bootstrap.test.sh' \
+  --exclude='tests/fm-dispatch-select.test.sh' \
   --exclude='projects/' \
   --exclude='state/' \
   --exclude='.no-mistakes/' \
