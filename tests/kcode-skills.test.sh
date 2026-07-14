@@ -57,6 +57,16 @@ physical_temp_root() {
   printf '%s\n' "$temp"
 }
 
+file_mode() {
+  python3 - "$1" <<'PY'
+import os
+import stat
+import sys
+
+print(format(stat.S_IMODE(os.stat(sys.argv[1]).st_mode), "o"))
+PY
+}
+
 test_snapshot_verifies() {
   local out
   out=$($SKILLS verify)
@@ -221,11 +231,11 @@ test_snapshot_normalizes_restrictive_checkout_modes() {
   chmod 0600 "$regular"
   chmod 0700 "$executable"
   "$SKILLS" restore --home "$home" >/dev/null
-  [ "$(stat -f '%Lp' "$directory" 2>/dev/null || stat -c '%a' "$directory")" = 755 ] \
+  [ "$(file_mode "$directory")" = 755 ] \
     || fail 'snapshot directory mode was not normalized'
-  [ "$(stat -f '%Lp' "$regular" 2>/dev/null || stat -c '%a' "$regular")" = 644 ] \
+  [ "$(file_mode "$regular")" = 644 ] \
     || fail 'snapshot regular-file mode was not normalized'
-  [ "$(stat -f '%Lp' "$executable" 2>/dev/null || stat -c '%a' "$executable")" = 755 ] \
+  [ "$(file_mode "$executable")" = 755 ] \
     || fail 'snapshot executable mode was not normalized'
   [ -x "$home/.claude/skills/bootstrap-ios/scripts/bootstrap-ios-skills.sh" ] \
     || fail 'normalized restore dropped the authenticated executable mode'
