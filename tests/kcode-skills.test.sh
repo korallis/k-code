@@ -209,6 +209,29 @@ test_restore_preserves_and_verifies_executable_modes() {
   pass 'restore preserves executable bits and verification rejects mode drift'
 }
 
+test_snapshot_normalizes_restrictive_checkout_modes() {
+  local temp home source directory regular executable
+  temp=$(physical_temp_root kcode-skills-restrictive-umask)
+  home="$temp/home"
+  source="$ROOT/skill-snapshot/vendor/rayfernando-skills/bootstrap-ios"
+  directory="$source/references"
+  regular="$directory/workflow.md"
+  executable="$source/scripts/bootstrap-ios-skills.sh"
+  chmod 0700 "$directory"
+  chmod 0600 "$regular"
+  chmod 0700 "$executable"
+  "$SKILLS" restore --home "$home" >/dev/null
+  [ "$(stat -f '%Lp' "$directory" 2>/dev/null || stat -c '%a' "$directory")" = 755 ] \
+    || fail 'snapshot directory mode was not normalized'
+  [ "$(stat -f '%Lp' "$regular" 2>/dev/null || stat -c '%a' "$regular")" = 644 ] \
+    || fail 'snapshot regular-file mode was not normalized'
+  [ "$(stat -f '%Lp' "$executable" 2>/dev/null || stat -c '%a' "$executable")" = 755 ] \
+    || fail 'snapshot executable mode was not normalized'
+  [ -x "$home/.claude/skills/bootstrap-ios/scripts/bootstrap-ios-skills.sh" ] \
+    || fail 'normalized restore dropped the authenticated executable mode'
+  pass 'restrictive checkout modes normalize to authenticated restore modes'
+}
+
 test_snapshot_rejects_corrupt_provenance() {
   local backup out rc
   backup=$(mktemp "${TMPDIR:-/tmp}/kcode-sources.XXXXXX")
@@ -746,6 +769,30 @@ EOF_HOOK
   pass 'rollback removes only captured entries and preserves concurrent children'
 }
 
+test_restore_rollback_preserves_concurrent_file_edit() {
+  local temp home hook destination out rc
+  temp=$(physical_temp_root kcode-skills-concurrent-edit)
+  home="$temp/home"
+  hook="$temp/edit-promoted-file"
+  destination="$home/.agents/skills/no-mistakes/SKILL.md"
+  mkdir -p "$home"
+  cat > "$hook" <<'EOF_HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$2" = 1 ] || exit 0
+printf 'concurrent in-place edit\n' > "$1/SKILL.md"
+EOF_HOOK
+  chmod +x "$hook"
+
+  rc=0
+  out=$(KCODE_RESTORE_TEST_AFTER_PROMOTE_HOOK="$hook" KCODE_RESTORE_TEST_FAIL_AFTER=1 \
+    "$SKILLS" restore --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'restore ignored failure after a concurrent file edit'
+  [ "$(cat "$destination")" = 'concurrent in-place edit' ] \
+    || fail "rollback removed or changed a concurrent file edit: $out"
+  pass 'rollback preserves promoted files changed by another writer'
+}
+
 test_restore_journals_before_post_rename_failure() {
   local temp home hook out rc
   temp=$(physical_temp_root kcode-skills-post-rename-failure)
@@ -953,6 +1000,30 @@ test_restore_rejects_symlink_above_nonexistent_home() {
   pass 'restore validates requested-home ancestors before canonicalization'
 }
 
+test_verify_home_rejects_root_metadata_drift() {
+  local temp home destination displaced out rc
+  temp=$(physical_temp_root kcode-skills-root-metadata)
+  home="$temp/home"
+  destination="$home/.agents/skills/no-mistakes"
+  displaced="$temp/no-mistakes"
+  "$SKILLS" restore --home "$home" >/dev/null
+  chmod 0700 "$destination"
+  rc=0
+  out=$("$SKILLS" verify-home --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'verify-home accepted restored root mode drift'
+  assert_contains "$out" 'restored skill differs or is missing' \
+    'root mode drift failure did not identify the restored skill'
+  chmod 0755 "$destination"
+  mv "$destination" "$displaced"
+  ln -s "$displaced" "$destination"
+  rc=0
+  out=$("$SKILLS" verify-home --home "$home" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'verify-home accepted a symlinked restored root'
+  assert_contains "$out" 'restored skill differs or is missing' \
+    'root symlink failure did not identify the restored skill'
+  pass 'verification binds restored root type and mode'
+}
+
 test_verify_home_rejects_stale_marker() {
   local temp home marker out rc
   temp=$(physical_temp_root kcode-skills-stale-marker)
@@ -1046,6 +1117,7 @@ test_clean_home_restore
 test_restore_stages_on_destination_filesystem
 test_restore_nested_target_mount
 test_restore_preserves_and_verifies_executable_modes
+test_snapshot_normalizes_restrictive_checkout_modes
 test_snapshot_rejects_corrupt_provenance
 test_snapshot_rejects_coordinated_content_corruption
 test_restore_refuses_different_existing_skill
@@ -1065,6 +1137,7 @@ test_restore_rolls_back_on_staging_cleanup_failure
 test_restore_revalidates_promotion_ancestors
 test_restore_preserves_concurrent_destination
 test_restore_rollback_preserves_concurrent_child
+test_restore_rollback_preserves_concurrent_file_edit
 test_restore_journals_before_post_rename_failure
 test_restore_revalidates_compatible_existing_entries
 test_restore_reports_quarantine_restore_collision
@@ -1073,6 +1146,7 @@ test_restore_does_not_journal_replaced_directory
 test_restore_rejects_home_ancestor_swap_before_promotion
 test_restore_rejects_symlinked_ancestor
 test_restore_rejects_symlink_above_nonexistent_home
+test_verify_home_rejects_root_metadata_drift
 test_verify_home_rejects_stale_marker
 test_manifest_covers_every_captured_source_once
 test_live_inventory_detects_unclassified_skill

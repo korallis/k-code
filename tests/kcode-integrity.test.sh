@@ -63,6 +63,31 @@ test_scan_rejects_secret_present_only_in_index() {
   pass 'content scan reads indexed blobs instead of working-tree replacements'
 }
 
+test_scan_rejects_generated_data_classes_and_keeps_safe_memory() {
+  local temp repo out rc
+  temp=$(fm_test_tmproot kcode-integrity-data-policy)
+  repo="$temp/repo"
+  build_fixture "$repo"
+  mkdir -p "$repo/data/random-task/screenshots" "$repo/data/another-task"
+  printf 'safe durable task memory\n' > "$repo/data/random-task/report.md"
+  printf 'generated image\n' > "$repo/data/random-task/screenshots/frame.png"
+  printf 'archived history\n' > "$repo/data/another-task/history.bundle"
+  git -C "$repo" add -f data
+
+  rc=0
+  out=$("$repo/bin/kcode-integrity.sh" --content-scan-only 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'integrity accepted generated data artifacts'
+  assert_contains "$out" 'data/random-task/screenshots/frame.png' \
+    'integrity did not reject a generated screenshot by content class'
+  assert_contains "$out" 'data/another-task/history.bundle' \
+    'integrity did not reject an archived Git bundle by content class'
+  assert_not_contains "$out" 'data/random-task/report.md' \
+    'integrity rejected safe durable text memory'
+  assert_not_contains "$(grep -n 'kcode-rebuild-g7' "$repo/bin/kcode-integrity.sh" || true)" \
+    'kcode-rebuild-g7' 'integrity special-cases an obsolete task id'
+  pass 'integrity excludes generated data classes without task-specific policy'
+}
+
 test_scan_reports_paths_and_patterns_without_match_content() {
   local temp repo secret pairing subject field value finding out rc
   temp=$(fm_test_tmproot kcode-integrity-diagnostics)
@@ -93,4 +118,5 @@ test_scan_reports_paths_and_patterns_without_match_content() {
 
 test_scan_ignores_untracked_private_and_tracked_binary_files
 test_scan_rejects_secret_present_only_in_index
+test_scan_rejects_generated_data_classes_and_keeps_safe_memory
 test_scan_reports_paths_and_patterns_without_match_content

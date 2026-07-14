@@ -63,6 +63,12 @@ import sys
 from pathlib import Path
 
 left, right = map(Path, sys.argv[1:])
+left_value = left.lstat()
+right_value = right.lstat()
+if not stat.S_ISDIR(left_value.st_mode) or not stat.S_ISDIR(right_value.st_mode):
+    raise SystemExit(1)
+if stat.S_IMODE(left_value.st_mode) != stat.S_IMODE(right_value.st_mode):
+    raise SystemExit(1)
 for source in left.rglob("*"):
     relative = source.relative_to(left)
     destination = right / relative
@@ -75,8 +81,59 @@ for source in left.rglob("*"):
 PY
 }
 
+normalize_snapshot_modes() {
+  python3 - "$ROOT" "$SNAPSHOT/modes.tsv" <<'PY'
+import hashlib
+import os
+import stat
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+modes = Path(sys.argv[2])
+modes_bytes = modes.read_bytes()
+if hashlib.sha256(modes_bytes).hexdigest() != "c30273bff80c19f27dbd9d5dae8021589faf5104b00881f893e3be559b56e395":
+    raise SystemExit("kcode-skills: reviewed provenance digest mismatch: modes.tsv")
+expected = {}
+for line in modes_bytes.decode("utf-8").splitlines():
+    if not line or line.startswith("#"):
+        continue
+    mode, relative = line.split("\t", 1)
+    path = (root / relative).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        raise SystemExit(f"kcode-skills: captured mode path escapes repository: {relative}")
+    if mode not in {"100644", "100755"} or relative in expected:
+        raise SystemExit(f"kcode-skills: invalid captured mode row: {relative}")
+    expected[relative] = 0o755 if mode == "100755" else 0o644
+for relative in (".agents/skills", "skills", "skill-snapshot/vendor"):
+    base = root / relative
+    base_value = base.lstat()
+    if not stat.S_ISDIR(base_value.st_mode):
+        raise SystemExit(f"kcode-skills: captured source root is not a directory: {relative}")
+    os.chmod(base, 0o755, follow_symlinks=False)
+    for current, directories, _ in os.walk(base, followlinks=False):
+        for name in directories:
+            path = Path(current) / name
+            value = path.lstat()
+            if stat.S_ISLNK(value.st_mode):
+                raise SystemExit(f"kcode-skills: captured source contains a symlink: {path.relative_to(root)}")
+            if not stat.S_ISDIR(value.st_mode):
+                raise SystemExit(f"kcode-skills: captured source entry is not a directory: {path.relative_to(root)}")
+            os.chmod(path, 0o755, follow_symlinks=False)
+for relative, mode in expected.items():
+    path = root / relative
+    value = path.lstat()
+    if not stat.S_ISREG(value.st_mode):
+        raise SystemExit(f"kcode-skills: captured source is not a regular file: {relative}")
+    os.chmod(path, mode, follow_symlinks=False)
+PY
+}
+
 verify_snapshot() {
   local listed actual tracked source target name declared duplicate front_name
+  normalize_snapshot_modes
   for file in sources.tsv roots.tsv overlays.tsv harness-managed.tsv restore.tsv checksums.sha256 modes.tsv README.md; do
     [ -f "$SNAPSHOT/$file" ] || fail "missing skill-snapshot/$file"
   done
@@ -617,7 +674,10 @@ def capture_tree_at(parent_fd, name):
 
     def visit(owner_fd, entry_name, relative):
         value = os.stat(entry_name, dir_fd=owner_fd, follow_symlinks=False)
-        captured.append((relative, identity(value), value.st_mode))
+        digest = None
+        if stat.S_ISREG(value.st_mode):
+            digest = file_digest_at(owner_fd, entry_name, value)
+        captured.append((relative, identity(value), value.st_mode, digest))
         if stat.S_ISDIR(value.st_mode):
             child_fd = os.open(entry_name, flags, dir_fd=owner_fd)
             try:
@@ -844,6 +904,29 @@ def remove_staging(parent_fd, staging_fd, staging_name, expected, owned):
     raise OSError(errno.ESTALE, "owned staging directory was lost before cleanup", staging_name)
 
 
+def file_digest_at(parent_fd, name, expected_value):
+    file_flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        file_flags |= os.O_NOFOLLOW
+    fd = os.open(name, file_flags, dir_fd=parent_fd)
+    try:
+        opened = os.fstat(fd)
+        if identity(opened) != identity(expected_value):
+            raise OSError(errno.ESTALE, "file identity changed during hashing", name)
+        digest = hashlib.sha256()
+        while True:
+            block = os.read(fd, 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+        final = os.fstat(fd)
+        if identity(final) != identity(expected_value) or final.st_mode != expected_value.st_mode:
+            raise OSError(errno.ESTALE, "file changed during hashing", name)
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
+
+
 def content_signature(parent_fd, name):
     records = []
 
@@ -854,24 +937,7 @@ def content_signature(parent_fd, name):
             records.append((relative, kind, stat.S_IMODE(value.st_mode), os.readlink(entry_name, dir_fd=owner_fd)))
             return
         if stat.S_ISREG(value.st_mode):
-            file_flags = os.O_RDONLY
-            if hasattr(os, "O_NOFOLLOW"):
-                file_flags |= os.O_NOFOLLOW
-            fd = os.open(entry_name, file_flags, dir_fd=owner_fd)
-            try:
-                if identity(os.fstat(fd)) != identity(value):
-                    raise OSError(errno.ESTALE, "file identity changed during validation", entry_name)
-                digest = hashlib.sha256()
-                while True:
-                    block = os.read(fd, 1024 * 1024)
-                    if not block:
-                        break
-                    digest.update(block)
-                if identity(os.fstat(fd)) != identity(value):
-                    raise OSError(errno.ESTALE, "file identity changed during validation", entry_name)
-                records.append((relative, kind, stat.S_IMODE(value.st_mode), digest.hexdigest()))
-            finally:
-                os.close(fd)
+            records.append((relative, kind, stat.S_IMODE(value.st_mode), file_digest_at(owner_fd, entry_name, value)))
             return
         if stat.S_ISDIR(value.st_mode):
             fd = os.open(entry_name, flags, dir_fd=owner_fd)
@@ -922,7 +988,7 @@ def make_owned_directory(parent_fd, name):
     temporary, fd, expected = create_private_directory(parent_fd, "kcode-directory")
     try:
         rename_noreplace(parent_fd, temporary, parent_fd, name)
-        created_dirs.append((parent_fd, name, expected))
+        created_dirs.append((parent_fd, name, expected, os.fstat(fd).st_mode))
         run_hook("KCODE_RESTORE_TEST_AFTER_DIRECTORY_RENAME_HOOK", name, temporary)
         value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         if identity(value) != expected:
@@ -1011,13 +1077,16 @@ def restore_quarantine(parent_fd, temporary, name):
         ) from error
 
 
-def remove_owned_entry(parent_fd, name, expected, mode):
+def remove_owned_entry(parent_fd, name, expected, mode, digest=None):
     temporary = quarantine(parent_fd, name)
     if temporary is None:
         return
     try:
         value = os.stat(temporary, dir_fd=parent_fd, follow_symlinks=False)
-        if identity(value) != expected:
+        if identity(value) != expected or value.st_mode != mode:
+            restore_quarantine(parent_fd, temporary, name)
+            return
+        if stat.S_ISREG(mode) and file_digest_at(parent_fd, temporary, value) != digest:
             restore_quarantine(parent_fd, temporary, name)
             return
         if stat.S_ISDIR(mode):
@@ -1029,17 +1098,21 @@ def remove_owned_entry(parent_fd, name, expected, mode):
 
 
 def remove_owned_path(parent_fd, name, captured):
-    provenance = {components: (expected, mode) for components, expected, mode in captured}
+    provenance = {components: (expected, mode) for components, expected, mode, _ in captured}
     root_expected, root_mode = provenance[()]
+    root_digest = captured[0][3]
     temporary = quarantine(parent_fd, name)
     if temporary is None:
         return
     try:
         value = os.stat(temporary, dir_fd=parent_fd, follow_symlinks=False)
-        if identity(value) != root_expected:
+        if identity(value) != root_expected or value.st_mode != root_mode:
             restore_quarantine(parent_fd, temporary, name)
             return
         if not stat.S_ISDIR(root_mode):
+            if stat.S_ISREG(root_mode) and file_digest_at(parent_fd, temporary, value) != root_digest:
+                restore_quarantine(parent_fd, temporary, name)
+                return
             os.unlink(temporary, dir_fd=parent_fd)
             return
         root_fd = os.open(temporary, flags, dir_fd=parent_fd)
@@ -1052,11 +1125,11 @@ def remove_owned_path(parent_fd, name, captured):
                 key=lambda item: (len(item[0]), item[0]),
                 reverse=True,
             )
-            for components, expected, mode in entries:
+            for components, expected, mode, digest in entries:
                 try:
                     owner_fd = open_owned_parent(root_fd, components[:-1], provenance)
                     try:
-                        remove_owned_entry(owner_fd, components[-1], expected, mode)
+                        remove_owned_entry(owner_fd, components[-1], expected, mode, digest)
                     finally:
                         os.close(owner_fd)
                 except OSError:
@@ -1079,9 +1152,9 @@ def rollback():
             remove_owned_path(parent_fd, name, captured)
         except Exception as error:
             failures.append(error)
-    for parent_fd, name, expected in reversed(created_dirs):
+    for parent_fd, name, expected, mode in reversed(created_dirs):
         try:
-            remove_owned_entry(parent_fd, name, expected, stat.S_IFDIR)
+            remove_owned_entry(parent_fd, name, expected, mode)
         except Exception as error:
             failures.append(error)
     return failures

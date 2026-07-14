@@ -37,6 +37,18 @@ scan_tracked_text_pattern() {
   [ "$matched" -eq 0 ] || fail=1
 }
 
+scan_tracked_data_policy() {
+  local path matched=0
+  while IFS= read -r -d '' path; do
+    if printf '%s\n' "$path" | LC_ALL=C grep -Eiq \
+      '^data/(.*/)?((screenshots?|gifs?|previews?|renders?)(/|$)|[^/]+\.(bundle|gif|png|jpe?g|webp)$)'; then
+      printf 'kcode-integrity: generated data artifact is tracked: %q\n' "$path" >&2
+      matched=1
+    fi
+  done < <(git ls-files -z -- data)
+  [ "$matched" -eq 0 ] || fail=1
+}
+
 scan_tracked_content() {
   local pattern
   local secret_patterns=(
@@ -63,6 +75,7 @@ scan_tracked_content() {
   done
   scan_tracked_text_pattern 'possible FMX pairing token pattern' 0 \
     'FMX_PAIRING_TOKEN=[A-Za-z0-9_-]{20,}'
+  scan_tracked_data_policy
 }
 
 if [ "${1:-}" = '--content-scan-only' ]; then
