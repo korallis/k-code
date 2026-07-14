@@ -6,14 +6,6 @@
 # This captain-controlled repository trusts its own feature branches to select them.
 allow_repo_commands: true
 
-agent_args_override:
-  pi:
-    - --model
-    - openai-codex/gpt-5.6-sol
-    - --thinking
-    - medium
-    - --no-extensions
-
 commands:
   lint: 'bin/fm-lint.sh'
   test: 'bin/kcode-integrity.sh && tests/kcode-integrity.test.sh && tests/fm-bootstrap.test.sh && tests/fm-dispatch-select.test.sh && tests/kcode-validation-isolation.test.sh --resolver && tests/kcode-skills.test.sh && tests/kcode-pi-packages.test.sh && tests/kcode-sync.test.sh'

@@ -6,6 +6,8 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 CONFIG="$ROOT/.no-mistakes.yaml"
+TURNEND_EXTENSION="$ROOT/.pi/extensions/fm-primary-turnend-guard.ts"
+WATCH_EXTENSION="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 MODE=${1:---static}
 [ "$MODE" = --resolver ] || [ "$MODE" = --static ] || fail 'usage: kcode-validation-isolation.test.sh [--static|--resolver]'
 
@@ -21,25 +23,22 @@ stop_isolated_no_mistakes() {
   fi
 }
 
-test_repository_profile_declares_isolation() {
-  python3 - "$CONFIG" <<'PY'
-import re
+test_primary_extensions_ignore_ephemeral_sessions() {
+  python3 - "$TURNEND_EXTENSION" "$WATCH_EXTENSION" <<'PY'
 import sys
 from pathlib import Path
 
-text = Path(sys.argv[1]).read_text(encoding="utf-8")
-match = re.search(r"(?m)^agent_args_override:\n  pi:\n((?:    - [^\n]+\n)+)", text)
-if not match:
-    raise SystemExit("repository Pi argument override is missing")
-arguments = [line.removeprefix("    - ") for line in match.group(1).splitlines()]
-expected = ["--model", "openai-codex/gpt-5.6-sol", "--thinking", "medium", "--no-extensions"]
-if arguments != expected:
-    raise SystemExit(f"repository Pi argument override differs: {arguments!r}")
+for name in sys.argv[1:]:
+    text = Path(name).read_text(encoding="utf-8")
+    if 'process.argv.includes("--no-session")' not in text:
+        raise SystemExit(f"{name} does not identify ephemeral Pi sessions")
+    if "export default function (pi: ExtensionAPI) {\n  if (ephemeralSession) return;" not in text:
+        raise SystemExit(f"{name} does not disable primary behavior for ephemeral Pi sessions")
 PY
-  pass 'repository validation profile declares isolated Pi arguments'
+  pass 'primary Pi extensions are inert in ephemeral validation sessions'
 }
 
-test_validation_profile_disables_extensions() {
+test_validation_uses_ephemeral_pi_session() {
   local temp home project origin fakebin argv daemon_log push_log daemon_pid run_pid out i
   command -v no-mistakes >/dev/null 2>&1 || fail 'no-mistakes is required for validation isolation coverage'
   out=$(NO_MISTAKES_NO_UPDATE_CHECK=1 no-mistakes --version 2>&1)
@@ -111,7 +110,7 @@ EOF_REPO_CONFIG
       --skip rebase,test,document,lint,push,pr,ci >>"$push_log" 2>&1) &
   run_pid=$!
   for i in $(seq 1 400); do
-    grep -q -- '--no-extensions' "$argv" 2>/dev/null && break
+    [ -s "$argv" ] && break
     kill -0 "$daemon_pid" 2>/dev/null || fail "isolated no-mistakes daemon exited: $(cat "$daemon_log")"
     if ! kill -0 "$run_pid" 2>/dev/null; then
       wait "$run_pid" || true
@@ -119,17 +118,17 @@ EOF_REPO_CONFIG
     fi
     sleep 0.05
   done
-  grep -q -- '--no-extensions' "$argv" 2>/dev/null \
-    || fail "no-mistakes did not invoke the isolated Pi command: $(cat "$push_log"); $(cat "$daemon_log")"
+  [ -s "$argv" ] \
+    || fail "no-mistakes did not invoke Pi: $(cat "$push_log"); $(cat "$daemon_log")"
   out=$(cat "$argv")
-  assert_contains "$out" '--model openai-codex/gpt-5.6-sol --thinking medium --no-extensions ' \
-    'resolved Pi command omitted repository-scoped isolation arguments'
+  assert_contains "$out" '--mode json --no-session ' \
+    'no-mistakes did not mark its Pi invocation as an ephemeral session'
 
   stop_isolated_no_mistakes "$run_pid" "$daemon_pid"
   run_pid=
   daemon_pid=
   trap 'fm_test_cleanup || true' EXIT
-  pass 'no-mistakes resolves the intended Pi model with extensions disabled'
+  pass 'no-mistakes invokes Pi through the extension-inert ephemeral path'
 }
 
 test_print_mode_cannot_load_project_supervision_extensions() {
@@ -163,10 +162,10 @@ PY
   pass 'non-TUI Pi validation output cannot activate project extensions'
 }
 
-test_repository_profile_declares_isolation
+test_primary_extensions_ignore_ephemeral_sessions
 test_print_mode_cannot_load_project_supervision_extensions
 if [ "$MODE" = --resolver ]; then
-  test_validation_profile_disables_extensions
+  test_validation_uses_ephemeral_pi_session
 else
   pass 'actual no-mistakes resolver integration reserved for the version-matched pipeline'
 fi
